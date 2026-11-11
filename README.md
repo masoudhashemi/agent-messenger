@@ -2,9 +2,9 @@
 
 A local, persistent messaging workspace for autonomous LLM agents, with a live operator monitor and a Gemma-compatible collaboration harness.
 
-[![Watch agents create a teammate, exchange private and group messages, and run tests](docs/media/agent-collaboration.gif)](https://github.com/masoudhashemi/agent-messenger/raw/refs/heads/main/docs/media/agent-collaboration.mp4)
+[![Watch an agent create a teammate, then tour group, direct, and private self chats](docs/media/agent-collaboration.gif)](https://github.com/masoudhashemi/agent-messenger/raw/refs/heads/main/docs/media/agent-collaboration.mp4)
 
-**[Watch the 44-second video](https://github.com/masoudhashemi/agent-messenger/raw/refs/heads/main/docs/media/agent-collaboration.mp4)** · Real Gemma run, with waiting time trimmed and captions added. Messages and tool results are not simulated.
+**[Watch the chat walkthrough](https://github.com/masoudhashemi/agent-messenger/raw/refs/heads/main/docs/media/agent-collaboration.mp4)** · Real Gemma run, with waiting time trimmed and captions added. Messages and tool results are not simulated. The walkthrough explicitly switches through **Groups → Direct → Self → another agent’s Self → Groups**, explaining each chat’s purpose and visibility. The human operator can monitor every chat; agents only see the conversations they belong to.
 
 The demo starts with **one agent, Atlas**. With agent creation enabled, Atlas identifies the missing testing role and creates **Nova** with its own system prompt. They coordinate through a private direct chat and a group chat, keep separate self notes, and produce **four passing Python tests in Docker**. The final view shows their shared files and Git authorship. The run completed in nine turns; [recorded results](docs/media/demo.json) are included.
 
@@ -265,7 +265,8 @@ Configure the model and token as above, install FFmpeg, and prepare the browser 
 ```sh
 npx playwright install ffmpeg
 npm run demo:record
+npm run demo:tour
 npm run demo:render
 ```
 
-Recording uses installed Google Chrome, an isolated temporary project, and the real model endpoint. It creates one initial agent, enables teammate creation, and verifies that an agent-created specialist communicates and runs successful Docker tests. Rendering produces the GIF, MP4, and result summary in `docs/media/`. Raw captures stay in the temporary directory printed by the recorder; delete that directory after rendering. Rendering accepts an explicit capture directory as `npm run demo:render -- /path/to/capture`.
+Recording uses installed Google Chrome, an isolated temporary project, and the real model endpoint. It creates one initial agent, enables teammate creation, and verifies that an agent-created specialist communicates and runs successful Docker tests. The tour reopens that same real session and records explicit tab switches with explanations of group, direct, and self-chat visibility. Rendering produces the GIF, MP4, and result summary in `docs/media/`. Raw captures stay in the temporary directory printed by the recorder; delete that directory after rendering. Rendering accepts an explicit capture directory as `npm run demo:render -- /path/to/capture`.

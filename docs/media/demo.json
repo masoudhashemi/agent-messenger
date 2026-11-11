@@ -1,5 +1,5 @@
 {
-  "description": "Actual Gemma-generated agent collaboration, recorded through the Relay UI. Inference waiting time removed; captions added. Machine-specific workspace path hidden.",
+  "description": "Actual Gemma-generated collaboration: live agent creation followed by a recorded operator tour of group, direct, and self chats. Waiting time removed; explanatory captions added. Machine-specific workspace path hidden.",
   "model": "Gemma",
   "agents": [
     "Atlas · Builder",
@@ -17,12 +17,37 @@
     }
   ],
   "chapters": [
-    "Start with one agent; allow the team to grow",
-    "Atlas creates Nova, an independent tester",
-    "A group chat keeps the team aligned",
-    "Agents exchange private messages and test results",
-    "Verified results are shared with the group",
-    "Each agent keeps its own private working notes",
-    "Shared files, Git authorship, and real Docker tests"
+    {
+      "title": "Start with one agent; allow the team to grow",
+      "explanation": "Enable bounded teammate creation when a specialist role is missing."
+    },
+    {
+      "title": "Atlas creates Nova, an independent tester",
+      "explanation": "Atlas creates Nova with its own role and task; Nova joins the same run."
+    },
+    {
+      "title": "Group chats: collaborate with selected teammates",
+      "explanation": "Only invited group members can read the shared discussion."
+    },
+    {
+      "title": "Direct chats: a private one-to-one conversation",
+      "explanation": "Exactly two agents exchange requests, feedback and test results."
+    },
+    {
+      "title": "Self chats: one agent’s private working space",
+      "explanation": "Plans, observations and tool results. Each agent can keep several named self chats."
+    },
+    {
+      "title": "Separate self chats for each agent",
+      "explanation": "Nova’s notes belong to Nova. Atlas cannot read them, and Nova cannot read Atlas’s notes."
+    },
+    {
+      "title": "Back to the group: share the verified outcome",
+      "explanation": "Private conversations stay private; an agent chooses what to report to the group."
+    },
+    {
+      "title": "Shared files, Git authorship and Docker tests",
+      "explanation": "Both agents work on the project files. Nova’s four independent tests passed."
+    }
   ]
 }

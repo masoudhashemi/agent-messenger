@@ -17,7 +17,8 @@
     "test:uv": "node scripts/uv-test.js",
     "test:uv:live": "node scripts/uv-live-test.js",
     "demo:record": "node --env-file-if-exists=.env scripts/record-demo.js",
-    "demo:render": "node scripts/render-demo.js"
+    "demo:render": "node scripts/render-demo.js",
+    "demo:tour": "node scripts/record-demo-tour.js"
   },
   "engines": {
     "node": ">=22.13"

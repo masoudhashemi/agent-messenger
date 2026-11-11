@@ -12,7 +12,7 @@ const out = "docs/media";
 mkdirSync(out, { recursive: true });
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 const page = await browser.newPage({
-  viewport: { width: 1280, height: 80 },
+  viewport: { width: 1280, height: 120 },
   deviceScaleFactor: 1,
 });
 const parts = [];
@@ -22,11 +22,18 @@ try {
       part = join(directory, `part-${i}.mp4`);
     const title = `${i + 1}. ${segment.label.replace(/^\d+\. /, "")}`;
     await page.setContent(
-      '<style>*{box-sizing:border-box}body{margin:0;background:#123b2d;color:white;font-family:Arial,sans-serif;padding:12px 26px}h1{font-size:23px;margin:0 0 7px;font-weight:600}p{font-size:12px;color:#bdd5cb;margin:0}.brand{position:absolute;right:28px;top:23px;font-size:28px;font-weight:bold;color:#a8dbbd}</style><h1></h1><p>Real Gemma run · waiting time trimmed · no simulated messages</p><div class="brand">RELAY</div>',
+      '<style>*{box-sizing:border-box}body{margin:0;background:#123b2d;color:white;font-family:Arial,sans-serif;padding:12px 26px}h1{font-size:23px;max-width:1100px;margin:0 0 7px;font-weight:600}p{font-size:17px;max-width:1110px;color:#e0eee7;margin:0;line-height:1.25}.note{position:absolute;bottom:12px;left:26px;font-size:11px;color:#bdd5cb}.brand{position:absolute;right:28px;top:25px;font-size:27px;font-weight:bold;color:#a8dbbd}</style><h1></h1><p id="explanation"></p><div class="note">Real Gemma session · Operator view: you can inspect all chats; agents only see their own conversations.</div><div class="brand">RELAY</div>',
     );
     await page
       .locator("h1")
       .evaluate((el, text) => (el.textContent = text), title);
+    await page
+      .locator("#explanation")
+      .evaluate(
+        (el, text) => (el.textContent = text),
+        segment.description ||
+          "Real agent collaboration; inference waiting time trimmed.",
+      );
     await page.screenshot({ path: caption });
     execFileSync(
       "ffmpeg",
@@ -40,11 +47,11 @@ try {
         "-t",
         String(segment.end - segment.start),
         "-i",
-        capture.video,
+        segment.video || capture.video,
         "-i",
         caption,
         "-filter_complex",
-        "[0:v]scale=1280:800,pad=1280:880:0:0:color=0x123b2d[base];[base][1:v]overlay=0:800",
+        "[0:v]scale=1280:800,pad=1280:920:0:0:color=0x123b2d[base];[base][1:v]overlay=0:800",
         "-r",
         "20",
         "-c:v",
@@ -110,14 +117,17 @@ writeFileSync(
   JSON.stringify(
     {
       description:
-        "Actual Gemma-generated agent collaboration, recorded through the Relay UI. Inference waiting time removed; captions added. Machine-specific workspace path hidden.",
+        "Actual Gemma-generated collaboration: live agent creation followed by a recorded operator tour of group, direct, and self chats. Waiting time removed; explanatory captions added. Machine-specific workspace path hidden.",
       model: "Gemma",
       agents: capture.agents.map((a) => a.name),
       new_agents: capture.created?.length || 0,
       turns: capture.turns,
       status: capture.status,
       executions: capture.executions,
-      chapters: capture.segments.map((s) => s.label.replace(/^\d+\. /, "")),
+      chapters: capture.segments.map((s) => ({
+        title: s.label.replace(/^\d+\. /, ""),
+        explanation: s.description || "",
+      })),
     },
     null,
     2,
