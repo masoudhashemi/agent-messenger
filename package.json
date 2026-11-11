@@ -1,0 +1,29 @@
+{
+  "name": "agent-messenger",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "test": "node --test test/*.test.js",
+    "test:live": "node scripts/live-test.js",
+    "test:browser": "node scripts/browser-check.js",
+    "example": "node scripts/add-example.js",
+    "test:sandbox": "node scripts/sandbox-test.js",
+    "test:retrieval:live": "node scripts/retrieval-live-test.js",
+    "test:agent-creation:live": "node scripts/agent-creation-live-test.js",
+    "test:workspace": "node scripts/persistent-workspace-test.js",
+    "setup:uv": "docker build -t relay-python-uv:0.9.11 docker/uv",
+    "test:uv": "node scripts/uv-test.js",
+    "test:uv:live": "node scripts/uv-live-test.js",
+    "demo:record": "node --env-file-if-exists=.env scripts/record-demo.js",
+    "demo:render": "node scripts/render-demo.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "prettier": "^3.9.10"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "description": "Actual Gemma-generated agent collaboration, recorded through the Relay UI. Inference waiting time removed; captions added. Machine-specific workspace path hidden.",
+  "model": "Gemma",
+  "agents": [
+    "Atlas · Builder",
+    "Nova · Tester"
+  ],
+  "new_agents": 1,
+  "turns": 9,
+  "status": "completed",
+  "executions": [
+    {
+      "path": "test_clamp.py",
+      "status": "succeeded",
+      "stdout": "",
+      "stderr": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n"
+    }
+  ],
+  "chapters": [
+    "Start with one agent; allow the team to grow",
+    "Atlas creates Nova, an independent tester",
+    "A group chat keeps the team aligned",
+    "Agents exchange private messages and test results",
+    "Verified results are shared with the group",
+    "Each agent keeps its own private working notes",
+    "Shared files, Git authorship, and real Docker tests"
+  ]
+}

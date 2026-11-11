@@ -1,0 +1,331 @@
+import { DatabaseSync } from "node:sqlite";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
+export class AppError extends Error {
+  constructor(message, status = 400) {
+    super(message);
+    this.status = status;
+  }
+}
+export const hash = (value) => createHash("sha256").update(value).digest("hex");
+export class Store {
+  constructor(path = ":memory:") {
+    this.db = new DatabaseSync(path);
+    this.db.exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
+   CREATE TABLE IF NOT EXISTS runtime(id INTEGER PRIMARY KEY CHECK(id=1),state TEXT NOT NULL);
+   CREATE TABLE IF NOT EXISTS agents(id TEXT PRIMARY KEY,name TEXT NOT NULL,prompt TEXT NOT NULL,token_hash TEXT NOT NULL,status TEXT DEFAULT 'idle',error TEXT);
+   CREATE TABLE IF NOT EXISTS chats(id TEXT PRIMARY KEY,name TEXT NOT NULL,kind TEXT NOT NULL,summary TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL);
+   CREATE TABLE IF NOT EXISTS members(chat_id TEXT REFERENCES chats(id),agent_id TEXT REFERENCES agents(id),PRIMARY KEY(chat_id,agent_id));
+   CREATE TABLE IF NOT EXISTS reads(chat_id TEXT REFERENCES chats(id),agent_id TEXT REFERENCES agents(id),last_id INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(chat_id,agent_id));
+   CREATE TABLE IF NOT EXISTS message_reads(agent_id TEXT REFERENCES agents(id),message_id INTEGER,PRIMARY KEY(agent_id,message_id));
+   CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,chat_id TEXT REFERENCES chats(id),sender_id TEXT,body TEXT NOT NULL,created_at TEXT NOT NULL);
+  `);
+    this.db
+      .prepare("UPDATE agents SET status='idle' WHERE status='running'")
+      .run();
+  }
+  saveRuntime(state) {
+    this.run(
+      "INSERT INTO runtime VALUES(1,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state",
+      JSON.stringify(state),
+    );
+  }
+  loadRuntime() {
+    const row = this.get("SELECT state FROM runtime WHERE id=1");
+    return row ? JSON.parse(row.state) : null;
+  }
+  all(sql, ...p) {
+    return this.db.prepare(sql).all(...p);
+  }
+  get(sql, ...p) {
+    return this.db.prepare(sql).get(...p);
+  }
+  run(sql, ...p) {
+    return this.db.prepare(sql).run(...p);
+  }
+  agent(id) {
+    const a = this.get(
+      "SELECT id,name,prompt,status,error FROM agents WHERE id=?",
+      id,
+    );
+    if (!a) throw new AppError("Agent not found", 404);
+    return a;
+  }
+  agents() {
+    return this.all("SELECT id,name,prompt,status,error FROM agents");
+  }
+  createAgent(name, prompt) {
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      name.length > 80 ||
+      typeof prompt !== "string" ||
+      !prompt.trim() ||
+      prompt.length > 20000
+    )
+      throw new AppError(
+        "Name and system prompt are required (80 / 20,000 character limits)",
+      );
+    const id = randomUUID(),
+      token = randomBytes(32).toString("hex");
+    this.run(
+      "INSERT INTO agents(id,name,prompt,token_hash) VALUES(?,?,?,?)",
+      id,
+      name.trim(),
+      prompt,
+      hash(token),
+    );
+    return { ...this.agent(id), token };
+  }
+  authenticate(token) {
+    if (!token) return null;
+    return this.get("SELECT id FROM agents WHERE token_hash=?", hash(token))
+      ?.id;
+  }
+  requireMember(chat, id) {
+    if (
+      !this.get(
+        "SELECT 1 FROM members WHERE chat_id=? AND agent_id=?",
+        chat,
+        id,
+      )
+    )
+      throw new AppError("Conversation unavailable", 403);
+  }
+  createChat(name, kind, members, actor = null, summary = "") {
+    if (!["self", "direct", "group"].includes(kind) || !Array.isArray(members))
+      throw new AppError("Invalid conversation");
+    members = [...new Set(members)];
+    if (
+      (kind === "self" && members.length !== 1) ||
+      (kind === "direct" && members.length !== 2) ||
+      (kind === "group" && members.length < 2)
+    )
+      throw new AppError(
+        "Self chats require one agent, direct chats two, and groups at least two",
+      );
+    if (actor && !members.includes(actor))
+      throw new AppError("You must belong to conversations you create", 403);
+    members.forEach((id) => this.agent(id));
+    if (kind === "direct") {
+      const existing = this.get(
+        `SELECT c.id FROM chats c JOIN members a ON c.id=a.chat_id JOIN members b ON c.id=b.chat_id WHERE c.kind='direct' AND a.agent_id=? AND b.agent_id=?`,
+        ...members,
+      );
+      if (existing) return this.chat(existing.id);
+    }
+    if (typeof name !== "string" || !name.trim() || name.length > 100)
+      throw new AppError("Conversation name required (max 100 characters)");
+    if (typeof summary !== "string" || summary.length > 1000)
+      throw new AppError("Summary must be at most 1,000 characters");
+    if (!summary.trim())
+      summary =
+        kind === "self"
+          ? `Private working notes for ${this.agent(members[0]).name}.`
+          : kind === "direct"
+            ? `Private conversation between ${members.map((id) => this.agent(id).name).join(" and ")}.`
+            : `Shared workspace for ${members.map((id) => this.agent(id).name).join(", ")}.`;
+    const id = randomUUID();
+    this.db.exec("BEGIN");
+    try {
+      this.run(
+        "INSERT INTO chats VALUES(?,?,?,?,?)",
+        id,
+        name.trim(),
+        kind,
+        summary,
+        new Date().toISOString(),
+      );
+      members.forEach((a) =>
+        this.run("INSERT INTO members VALUES(?,?)", id, a),
+      );
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+    return this.chat(id);
+  }
+  chat(id) {
+    const c = this.get("SELECT * FROM chats WHERE id=?", id);
+    if (!c) throw new AppError("Conversation not found", 404);
+    return {
+      ...c,
+      members: this.all("SELECT agent_id FROM members WHERE chat_id=?", id).map(
+        (x) => x.agent_id,
+      ),
+    };
+  }
+  chats(actor = null) {
+    return (
+      actor
+        ? this.all(
+            "SELECT c.id FROM chats c JOIN members m ON c.id=m.chat_id WHERE m.agent_id=?",
+            actor,
+          )
+        : this.all("SELECT id FROM chats ORDER BY created_at")
+    ).map((c) => this.chat(c.id));
+  }
+  addMember(chat, id, actor = null) {
+    if (actor) this.requireMember(chat, actor);
+    if (this.chat(chat).kind !== "group")
+      throw new AppError("Direct chat membership cannot change");
+    this.agent(id);
+    this.run("INSERT OR IGNORE INTO members VALUES(?,?)", chat, id);
+    return this.chat(chat);
+  }
+  messages(chat, actor = null) {
+    if (actor) this.requireMember(chat, actor);
+    else this.chat(chat);
+    return this.all(
+      "SELECT * FROM (SELECT * FROM messages WHERE chat_id=? ORDER BY id DESC LIMIT 200) ORDER BY id",
+      chat,
+    );
+  }
+  send(chat, sender, body) {
+    if (sender) this.requireMember(chat, sender);
+    else this.chat(chat);
+    if (typeof body !== "string" || !body.trim() || body.length > 16000)
+      throw new AppError("Message must contain 1–16,000 characters");
+    const r = this.run(
+      "INSERT INTO messages(chat_id,sender_id,body,created_at) VALUES(?,?,?,?)",
+      chat,
+      sender,
+      body.trim(),
+      new Date().toISOString(),
+    );
+    return this.get(
+      "SELECT * FROM messages WHERE id=?",
+      Number(r.lastInsertRowid),
+    );
+  }
+  status(id, status, error = null) {
+    this.run(
+      "UPDATE agents SET status=?,error=? WHERE id=?",
+      status,
+      error,
+      id,
+    );
+  }
+  updateChat(id, name, summary, actor = null) {
+    if (actor) this.requireMember(id, actor);
+    this.chat(id);
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      name.length > 100 ||
+      typeof summary !== "string" ||
+      summary.length > 1000
+    )
+      throw new AppError("Valid name and short summary required");
+    this.run(
+      "UPDATE chats SET name=?,summary=? WHERE id=?",
+      name.trim(),
+      summary,
+      id,
+    );
+    return this.chat(id);
+  }
+  read(chat, actor, through) {
+    this.requireMember(chat, actor);
+    const max = this.get(
+      "SELECT COALESCE(MAX(id),0) AS n FROM messages WHERE chat_id=?",
+      chat,
+    ).n;
+    if (!Number.isInteger(through) || through < 0 || through > max)
+      throw new AppError("Invalid read position");
+    this.run(
+      "INSERT INTO reads VALUES(?,?,?) ON CONFLICT(chat_id,agent_id) DO UPDATE SET last_id=MAX(last_id,excluded.last_id)",
+      chat,
+      actor,
+      through,
+    );
+    return { ok: true };
+  }
+  markSeen(actor, references) {
+    for (const ref of references) {
+      this.requireMember(ref.chat_id, actor);
+      if (
+        !this.get(
+          "SELECT 1 FROM messages WHERE id=? AND chat_id=?",
+          ref.message_id,
+          ref.chat_id,
+        )
+      )
+        throw new AppError("Message unavailable", 403);
+      this.run(
+        "INSERT OR IGNORE INTO message_reads VALUES(?,?)",
+        actor,
+        ref.message_id,
+      );
+    }
+    for (const chat of new Set(references.map((r) => r.chat_id))) {
+      const last =
+        this.get(
+          "SELECT last_id FROM reads WHERE chat_id=? AND agent_id=?",
+          chat,
+          actor,
+        )?.last_id || 0;
+      const first = this.get(
+        "SELECT MIN(id) AS id FROM messages WHERE chat_id=? AND id>? AND (sender_id IS NULL OR sender_id!=?) AND NOT EXISTS(SELECT 1 FROM message_reads r WHERE r.message_id=messages.id AND r.agent_id=?)",
+        chat,
+        last,
+        actor,
+        actor,
+      ).id;
+      const through = this.get(
+        "SELECT COALESCE(MAX(id),0) AS id FROM messages WHERE chat_id=? AND (? IS NULL OR id<?)",
+        chat,
+        first,
+        first,
+      ).id;
+      this.read(chat, actor, through);
+    }
+  }
+  readState(chat, actor) {
+    const last =
+      this.get(
+        "SELECT last_id FROM reads WHERE chat_id=? AND agent_id=?",
+        chat,
+        actor,
+      )?.last_id || 0;
+    return {
+      agent_id: actor,
+      last_read_id: last,
+      unread_count: this.get(
+        "SELECT COUNT(*) AS n FROM messages WHERE chat_id=? AND id>? AND (sender_id IS NULL OR sender_id!=?) AND NOT EXISTS(SELECT 1 FROM message_reads r WHERE r.message_id=messages.id AND r.agent_id=?)",
+        chat,
+        last,
+        actor,
+        actor,
+      ).n,
+    };
+  }
+  snapshot(actor = null) {
+    return {
+      agents: actor
+        ? this.agents().map(({ id, name, status }) => ({ id, name, status }))
+        : this.agents(),
+      chats: this.chats(actor).map((c) => ({
+        ...c,
+        messages: this.messages(c.id, actor),
+        read_states: (actor ? [actor] : c.members).map((id) =>
+          this.readState(c.id, id),
+        ),
+        ...(actor
+          ? {
+              new_since_last_read: this.messages(c.id, actor).filter(
+                (m) =>
+                  m.id > this.readState(c.id, actor).last_read_id &&
+                  m.sender_id !== actor &&
+                  !this.get(
+                    "SELECT 1 FROM message_reads WHERE agent_id=? AND message_id=?",
+                    actor,
+                    m.id,
+                  ),
+              ),
+            }
+          : {}),
+      })),
+    };
+  }
+}

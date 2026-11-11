@@ -1,0 +1,11 @@
+.env
+data/
+node_modules/
+*.log
+
+.env.*
+!.env.example
+configs/model.toml
+.DS_Store
+__pycache__/
+*.pyc
