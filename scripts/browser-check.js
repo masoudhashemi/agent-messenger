@@ -87,6 +87,10 @@ try {
   await page
     .getByRole("heading", { name: "Research notes", exact: true })
     .waitFor();
+  assert.equal(
+    await page.locator(".chat-row .chat-owner").first().textContent(),
+    "Lead",
+  );
   await page.locator("#message").fill("Browser smoke test: operator message");
   await page.locator("#compose button").click();
   await page
@@ -136,8 +140,12 @@ try {
     };
   });
   assert.equal(result.agentStatus, 401);
-  assert.equal(result.agents, 1);
+  assert.equal(result.agents, 2);
   await page.locator("[data-agent-tools]").first().click();
+  assert.match(
+    await page.locator("[name=prompt]").inputValue(),
+    /An isolated project for browser checks/,
+  );
   assert.equal(
     await page.locator("[name=tools][value=web_search]").isChecked(),
     false,
@@ -211,13 +219,11 @@ try {
   await page
     .locator('[data-plugin-edit="plugin_weather"]')
     .waitFor({ state: "detached" });
-  await page
-    .locator("#plugin-import")
-    .setInputFiles({
-      name: "weather.json",
-      mimeType: "application/json",
-      buffer: Buffer.from(exported),
-    });
+  await page.locator("#plugin-import").setInputFiles({
+    name: "weather.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(exported),
+  });
   await page
     .getByRole("button", { name: "Install plugin", exact: true })
     .click();
@@ -571,6 +577,10 @@ try {
   await page
     .getByRole("heading", { name: "Research notes", exact: true })
     .waitFor();
+  assert.equal(
+    await page.locator(".chat-row .chat-owner").first().textContent(),
+    "Lead",
+  );
   await page.goto(`http://localhost:${port}`);
   const projectCard = page
     .locator(".project-card")

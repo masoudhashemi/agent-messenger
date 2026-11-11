@@ -23,24 +23,29 @@ export function buildContext(
   const payload = {
     you: { id: actor, name: agent.name, tools: agent.tools || [] },
     task,
-    context: { agents: [], chats: [], active_chat: null, working_thread: null },
-    incoming_requests: [],
-    coding: retrieval.workspace
-      ? {
-          files: [],
-          environment: retrieval.workspace.environment(),
-          recent_executions: [],
-          sandbox: "Docker Python, no network, 256 MB, 1 CPU, timeout <= 60s",
-        }
-      : null,
-    previous_action_results: [],
-    turn,
     turn_limit: turnLimit,
     context_policy: {
       budget_bytes: budget,
       history:
         "Selective retrieval. Directories and search snippets do not mark messages read. Fetch truncated content using source IDs and pagination. Summaries are hints; verify original sources.",
     },
+    coding: retrieval.workspace
+      ? {
+          environment: retrieval.workspace.environment(),
+          sandbox: "Docker Python, no network, 256 MB, 1 CPU, timeout <= 60s",
+          files: [],
+          recent_executions: [],
+        }
+      : null,
+    context: {
+      agents: [],
+      chats: [],
+      working_thread: null,
+      active_chat: null,
+    },
+    incoming_requests: [],
+    previous_action_results: [],
+    turn,
   };
   const size = () => Buffer.byteLength(system) + bytes(payload) + 256;
   if (size() > budget - 1200)
@@ -66,12 +71,12 @@ export function buildContext(
   };
   for (const entry of incoming.slice(0, 4)) {
     const message = entry.message ?? entry;
-    const preview = {
+    const full = {
       ...message,
-      body: message.body.slice(0, 3000),
-      body_truncated: message.body.length > 3000,
+      body: message.body,
+      body_truncated: false,
     };
-    if (!push(payload.incoming_requests, preview)) {
+    if (!push(payload.incoming_requests, full)) {
       if (
         !push(payload.incoming_requests, {
           id: message.id,
@@ -81,8 +86,7 @@ export function buildContext(
         })
       )
         break;
-    } else if (!preview.body_truncated)
-      receipts.push({ chat_id: message.chat_id, message_id: message.id });
+    } else receipts.push({ chat_id: message.chat_id, message_id: message.id });
     included.push(message.id);
   }
   const results = Array.isArray(feedback) ? feedback : feedback.results || [];
@@ -102,10 +106,26 @@ export function buildContext(
   }
   const directory = retrieval.chatList(actor, { limit: 25 });
   const focus = store.get("SELECT * FROM agent_focus WHERE agent_id=?", actor);
+  const focusedEntry = directory.results.find((c) => c.id === focus?.chat_id);
+  const newerUnreadDirect = directory.results.find(
+    (c) =>
+      c.kind === "direct" &&
+      c.unread_count > 0 &&
+      c.last_message_id > (focusedEntry?.last_message_id || 0),
+  );
+  const newerUnreadAny = directory.results.find(
+    (c) =>
+      c.unread_count > 0 &&
+      c.last_message_id > (focusedEntry?.last_message_id || 0),
+  );
   let activeId = payload.incoming_requests[0]?.chat_id;
   if (!activeId)
     activeId =
+      newerUnreadDirect?.id ||
+      newerUnreadAny?.id ||
       focus?.chat_id ||
+      directory.results.find((c) => c.kind === "direct" && c.unread_count > 0)
+        ?.id ||
       directory.results.find((c) => c.unread_count > 0)?.id ||
       directory.results.find((c) => c.kind !== "self")?.id;
   const load = (id, key, notes = false) => {
@@ -119,11 +139,17 @@ export function buildContext(
     )
       return;
     const chat = store.chat(id),
+      readState = !notes ? store.readState(id, actor) : null,
       loaded = {
         id: chat.id,
         name: chat.name,
         kind: chat.kind,
+        ...(notes ? {} : { members: chat.members }),
         summary: chat.summary,
+        ...(readState?.first_unread_id !== null &&
+        readState?.first_unread_id !== undefined
+          ? { first_unread_id: readState.first_unread_id }
+          : {}),
         messages: [],
       };
     if (!set(payload.context, key, loaded)) return;
@@ -136,16 +162,47 @@ export function buildContext(
           "SELECT * FROM (SELECT * FROM messages WHERE chat_id=? ORDER BY id DESC LIMIT 6) ORDER BY id",
           id,
         );
-    for (const m of rows) {
+    let omittedInWindow = false;
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const m = rows[i];
       if (payload.incoming_requests.some((r) => r.id === m.id)) continue;
-      const limited = {
+      const turnPrefix = notes
+        ? m.body.match(/^(Turn \d+) · Working note\n/)?.[1]
+        : null;
+      const resultIds = turnPrefix
+        ? store
+            .all(
+              "SELECT id FROM messages WHERE chat_id=? AND id>? AND body LIKE ? ORDER BY id LIMIT 4",
+              id,
+              m.id,
+              `${turnPrefix} · Action results%`,
+            )
+            .map((r) => r.id)
+        : [];
+      const complete = {
         ...m,
-        body: m.body.slice(0, 2000),
-        body_truncated: m.body.length > 2000,
+        body: m.body,
+        body_truncated: false,
+        ...(resultIds.length ? { result_message_ids: resultIds } : {}),
       };
-      if (!push(loaded.messages, limited)) break;
-      if (!limited.body_truncated)
-        receipts.push({ chat_id: id, message_id: m.id });
+      loaded.messages.unshift(complete);
+      if (size() > budget) {
+        loaded.messages.shift();
+        omittedInWindow = true;
+        break;
+      }
+      receipts.push({ chat_id: id, message_id: m.id });
+    }
+    if (!notes && rows.length) {
+      const oldestLoadedId = loaded.messages[0]?.id ?? rows.at(-1).id + 1;
+      const hasOlder =
+        omittedInWindow ||
+        !!store.get(
+          "SELECT 1 FROM messages WHERE chat_id=? AND id<? LIMIT 1",
+          id,
+          oldestLoadedId,
+        );
+      if (hasOlder) set(loaded, "older_messages_available", true);
     }
   };
   load(activeId, "active_chat");
@@ -162,10 +219,14 @@ export function buildContext(
       id: c.id,
       name: c.name,
       kind: c.kind,
-      summary: c.summary.slice(0, 180),
-      summary_truncated: c.summary.length > 180,
+      members: c.members,
+      summary: c.summary,
+      summary_truncated: false,
       unread_count: c.unread_count,
       last_read_id: c.last_read_id,
+      ...(c.first_unread_id !== null && c.first_unread_id !== undefined
+        ? { first_unread_id: c.first_unread_id }
+        : {}),
       last_message_id: c.last_message_id,
     };
     if (!push(payload.context.chats, item)) break;

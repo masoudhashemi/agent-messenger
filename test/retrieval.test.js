@@ -396,3 +396,82 @@ test("conversation search obeys permissions and current task focus survives old 
   );
   s.db.close();
 });
+test("context orders static fields first and exposes retrieval pointers for unread gaps and past tool audits", () => {
+  const { s, r, a, b } = fixture();
+  const group = s.createChat("Design", "group", [a.id, b.id]);
+  const firstUnread = s.send(group.id, b.id, "early unread decision");
+  for (let i = 0; i < 7; i++) s.send(group.id, b.id, "recent message " + i);
+  const self = s.createChat("Notebook", "self", [a.id]);
+  s.send(self.id, a.id, "Turn 1 · Working note\nChecked initial files.");
+  const audit = s.send(
+    self.id,
+    a.id,
+    'Turn 1 · Action results\n[{"action":"list_files","result":{"files":[]}}]',
+  );
+  r.focus(a.id, group.id);
+  r.focus(a.id, self.id, true);
+  const frame = buildContext(r, {
+    agent: a,
+    system: "system",
+    task: "Coordinate",
+    turn: 2,
+    turnLimit: 6,
+  });
+  assert.deepEqual(Object.keys(frame.payload).slice(0, 5), [
+    "you",
+    "task",
+    "turn_limit",
+    "context_policy",
+    "coding",
+  ]);
+  const dirEntry = frame.payload.context.chats.find((c) => c.id === group.id);
+  assert.deepEqual(dirEntry.members, [a.id, b.id]);
+  assert.equal(dirEntry.first_unread_id, firstUnread.id);
+  assert.equal(
+    frame.payload.context.active_chat.older_messages_available,
+    true,
+  );
+  assert.equal(
+    frame.payload.context.active_chat.first_unread_id,
+    firstUnread.id,
+  );
+  assert.deepEqual(
+    frame.payload.context.working_thread.messages[0].result_message_ids,
+    [audit.id],
+  );
+  const longBody = "row | value\n".repeat(300) + "FINAL_TABLE_ROW";
+  s.send(group.id, b.id, longBody);
+  const withLong = buildContext(r, {
+    agent: a,
+    system: "system",
+    task: "Coordinate",
+    turn: 3,
+    turnLimit: 6,
+  });
+  const latestInContext = withLong.payload.context.active_chat.messages.at(-1);
+  assert.equal(latestInContext.body_truncated, false);
+  assert.ok(latestInContext.body.endsWith("FINAL_TABLE_ROW"));
+  const readPage = r.execute(a.id, {
+    type: "read_chat",
+    chat_id: group.id,
+    after_message_id: latestInContext.id - 1,
+    limit: 5,
+  });
+  assert.equal(readPage.messages[0].body, longBody);
+  assert.equal(readPage.messages[0].body_truncated, false);
+  const dm = s.createChat("Atlas & Nova", "direct", [a.id, b.id]);
+  s.send(dm.id, b.id, "Direct question from Nova");
+  const dmFocused = buildContext(r, {
+    agent: a,
+    system: "system",
+    task: "Coordinate",
+    turn: 4,
+    turnLimit: 6,
+  });
+  assert.equal(dmFocused.payload.context.active_chat.id, dm.id);
+  assert.equal(
+    dmFocused.payload.context.active_chat.messages[0].body,
+    "Direct question from Nova",
+  );
+  s.db.close();
+});

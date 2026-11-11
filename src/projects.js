@@ -15,6 +15,14 @@ import { Workspace } from "./workspace.js";
 import { PythonSandbox } from "./sandbox.js";
 import { Harness } from "./harness.js";
 
+export function defaultAgentPrompt(name, summary = "") {
+  const title = String(name || "Project").trim();
+  const details = String(summary || "").trim();
+  return details
+    ? `You are the lead agent for "${title}". Project objective and context: ${details}\n\nThink carefully in private working notes, recruit or collaborate with teammates using direct messages for 1-on-1 tasks and questions (and group chats only when 3+ agents need shared alignment), maintain clear chat summaries, and deliver well-verified results.`
+    : `You are the lead agent for "${title}". Think carefully in private working notes, recruit or collaborate with teammates using direct messages for 1-on-1 tasks and questions (and group chats only when 3+ agents need shared alignment), maintain clear chat summaries, and deliver well-verified results.`;
+}
+
 export class Projects {
   constructor(directory = "data/projects", notify = () => {}) {
     this.directory = safeDirectory(directory);
@@ -34,16 +42,8 @@ export class Projects {
       this.db.exec("ALTER TABLE projects ADD COLUMN workspace_path TEXT");
   }
   create(name, summary = "", source = null, workspacePath = "") {
-    if (
-      typeof name !== "string" ||
-      !name.trim() ||
-      name.length > 100 ||
-      typeof summary !== "string" ||
-      summary.length > 1000
-    )
-      throw new AppError(
-        "Project name (max 100) and summary (max 1,000 characters) are required",
-      );
+    if (typeof name !== "string" || !name.trim() || typeof summary !== "string")
+      throw new AppError("Project name is required");
     const id = randomUUID();
     let root = resolve(this.directory, "workspaces", id);
     if (workspacePath) {
@@ -80,6 +80,11 @@ export class Projects {
         "INSERT INTO projects(id,name,summary,created_at,workspace_path) VALUES(?,?,?,?,?)",
       )
       .run(id, name.trim(), summary, new Date().toISOString(), root);
+    if (!source) {
+      const { store } = this.get(id);
+      if (!store.agents().length)
+        store.createAgent("Lead", defaultAgentPrompt(name.trim(), summary));
+    }
     return this.describe(id);
   }
   get(id) {

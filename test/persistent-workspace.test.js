@@ -178,8 +178,11 @@ test("binary artifacts live on disk and are versioned in Git without entering te
       ]),
       Buffer.from([0, 1, 2, 255]),
     );
+    assert.equal(w.folder.artifactCache.has("image.bin"), true);
+    assert.equal(w.sync(), false);
     rmSync(path);
     w.sync();
+    assert.equal(w.folder.artifactCache.has("image.bin"), false);
     assert.equal(w.history()[0].changes[0].kind, "deleted");
   } finally {
     f.cleanup();

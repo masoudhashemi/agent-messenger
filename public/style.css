@@ -213,7 +213,28 @@ p {
   font-size: 12px;
   display: flex;
   justify-content: space-between;
-  gap: 5px;
+  align-items: center;
+  gap: 6px;
+}
+.row-title > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-owner {
+  flex-shrink: 0;
+  max-width: 48%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 600;
+  color: #6e5d36;
+  background: #ede8d9;
+  border: 1px solid #e2dbc7;
+  padding: 2px 6px;
+  border-radius: 6px;
 }
 .row-preview {
   white-space: nowrap;
@@ -385,6 +406,7 @@ p {
   font-size: 10px;
   color: #8d9786;
   margin-top: 4px;
+  cursor: pointer;
 }
 .state {
   margin-left: auto;
@@ -467,6 +489,11 @@ p {
   font-size: 13px;
   max-width: 380px;
   margin-bottom: 25px;
+}
+.empty .actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
 }
 .empty .avatar {
   width: 70px;

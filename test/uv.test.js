@@ -163,7 +163,7 @@ test("package gateway accepts only fixed package paths and rejects arbitrary des
     "-I",
     "-B",
     "-c",
-    `import importlib.util
+    `import importlib.util, io
 spec=importlib.util.spec_from_file_location('proxy',${JSON.stringify(join(process.cwd(), "docker/uv/package_proxy.py"))})
 m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 assert m.upstream('/simple/idna/') == ('pypi.org','/simple/idna/')
@@ -172,6 +172,41 @@ for p in ['https://example.com/', '//example.com/', '/simple/idna/?url=http://lo
  try: m.upstream(p)
  except ValueError: pass
  else: raise AssertionError('Allowed: '+p)
+
+class FakeResponse:
+ def __init__(self, body, length=None, status=200):
+  self._buf = io.BytesIO(body)
+  self._length = length
+  self.status = status
+ def getheader(self, name, default=None):
+  if name == 'Content-Length': return self._length
+  return default
+ def read(self, n=-1): return self._buf.read(n)
+
+class FakeConn:
+ def __init__(self, resp): self.resp = resp
+ def request(self, *a, **kw): pass
+ def getresponse(self): return self.resp
+ def close(self): pass
+
+def run_request(path, resp):
+ m.PublicHTTPS = lambda host, timeout=25: FakeConn(resp)
+ raw = f"GET {path} HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n".encode()
+ rfile, wfile = io.BytesIO(raw), io.BytesIO()
+ class H(m.Handler):
+  def __init__(self):
+   self.rfile, self.wfile = rfile, wfile
+   self.client_address = ('127.0.0.1', 0)
+   self.server = type('S', (), {'server_name': 'test', 'server_port': 80})()
+   self.handle_one_request()
+ H()
+ return wfile.getvalue()
+
+out = run_request('/simple/idna/', FakeResponse(b'<a href="https://files.pythonhosted.org/packages/a.whl">a</a>', None))
+assert b'200 OK' in out and b'http://127.0.0.1:8123/files/packages/a.whl' in out
+m.MAX_TOTAL = 10
+out_over = run_request('/simple/idna/', FakeResponse(b'0123456789abcdef', None))
+assert b'413' in out_over
 `,
   ]);
 });

@@ -52,6 +52,7 @@ export class ProjectFolder {
   constructor(root, gitDir) {
     this.root = safeDirectory(root);
     this.gitDir = safeDirectory(gitDir);
+    this.artifactCache = new Map();
     this.initialized = existsSync(join(this.gitDir, "HEAD"));
     if (!this.initialized)
       execFileSync("git", ["init", "--bare", "--quiet", this.gitDir], {
@@ -190,11 +191,26 @@ export class ProjectFolder {
           walk(path);
           continue;
         }
-        const unavailable = (reason) => {
+        const unavailable = (reason, buf = null) => {
           if (stat.size <= 8000000 && total + stat.size <= 64000000) {
-            const hash = createHash("sha256")
-              .update(readFileSync(join(this.root, path)))
-              .digest("hex");
+            const cached = this.artifactCache.get(path);
+            const hash =
+              cached &&
+              cached.ino === stat.ino &&
+              cached.size === stat.size &&
+              cached.mtimeMs === stat.mtimeMs &&
+              cached.ctimeMs === stat.ctimeMs
+                ? cached.hash
+                : createHash("sha256")
+                    .update(buf || readFileSync(join(this.root, path)))
+                    .digest("hex");
+            this.artifactCache.set(path, {
+              ino: stat.ino,
+              size: stat.size,
+              mtimeMs: stat.mtimeMs,
+              ctimeMs: stat.ctimeMs,
+              hash,
+            });
             artifacts.push({ path, hash, bytes: stat.size });
             total += stat.size;
           } else
@@ -215,16 +231,32 @@ export class ProjectFolder {
           unavailable("Outside text indexing limits");
           continue;
         }
+        const cachedArtifact = this.artifactCache.get(path);
+        if (
+          cachedArtifact &&
+          cachedArtifact.binary &&
+          cachedArtifact.ino === stat.ino &&
+          cachedArtifact.size === stat.size &&
+          cachedArtifact.mtimeMs === stat.mtimeMs &&
+          cachedArtifact.ctimeMs === stat.ctimeMs
+        ) {
+          unavailable("Binary file");
+          continue;
+        }
         const buf = readFileSync(join(this.root, path));
         let content;
         try {
           content = new TextDecoder("utf-8", { fatal: true }).decode(buf);
         } catch {
-          unavailable("Binary file");
+          unavailable("Binary file", buf);
+          this.artifactCache.get(path) &&
+            (this.artifactCache.get(path).binary = true);
           continue;
         }
         if (content.includes("\0")) {
-          unavailable("Binary file");
+          unavailable("Binary file", buf);
+          this.artifactCache.get(path) &&
+            (this.artifactCache.get(path).binary = true);
           continue;
         }
         total += buf.length;
@@ -233,6 +265,9 @@ export class ProjectFolder {
       }
     };
     walk("");
+    const seenArtifacts = new Set(artifacts.map((a) => a.path));
+    for (const key of this.artifactCache.keys())
+      if (!seenArtifacts.has(key)) this.artifactCache.delete(key);
     return { files, directories, warnings, unsupported, artifacts };
   }
   commit(paths, message, actor, at = null) {

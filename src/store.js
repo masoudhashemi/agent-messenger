@@ -158,10 +158,30 @@ export class Store {
     return [...new Set(tools)];
   }
   setAgentTools(id, tools) {
-    this.agent(id);
+    return this.updateAgent(id, { tools });
+  }
+  updateAgent(id, { name, prompt, tools } = {}) {
+    const current = this.agent(id);
+    const nextName =
+      name === undefined ? current.name : String(name ?? "").trim();
+    const nextPrompt =
+      prompt === undefined ? current.prompt : String(prompt ?? "");
+    if (!nextName || !nextPrompt.trim())
+      throw new AppError("Name and system prompt are required");
+    if (
+      nextName !== current.name &&
+      this.agents().some(
+        (a) => a.id !== id && a.name.toLowerCase() === nextName.toLowerCase(),
+      )
+    )
+      throw new AppError("An agent with this name already exists");
+    const nextTools =
+      tools === undefined ? current.tools : this.validateTools(tools);
     this.run(
-      "UPDATE agents SET tools=? WHERE id=?",
-      JSON.stringify(this.validateTools(tools)),
+      "UPDATE agents SET name=?, prompt=?, tools=? WHERE id=?",
+      nextName,
+      nextPrompt,
+      JSON.stringify(nextTools),
       id,
     );
     return this.agent(id);
@@ -171,14 +191,10 @@ export class Store {
     if (
       typeof name !== "string" ||
       !name.trim() ||
-      name.length > 80 ||
       typeof prompt !== "string" ||
-      !prompt.trim() ||
-      prompt.length > 20000
+      !prompt.trim()
     )
-      throw new AppError(
-        "Name and system prompt are required (80 / 20,000 character limits)",
-      );
+      throw new AppError("Name and system prompt are required");
     const id = randomUUID(),
       token = randomBytes(32).toString("hex");
     this.run(
@@ -228,10 +244,10 @@ export class Store {
       );
       if (existing) return this.chat(existing.id);
     }
-    if (typeof name !== "string" || !name.trim() || name.length > 100)
-      throw new AppError("Conversation name required (max 100 characters)");
-    if (typeof summary !== "string" || summary.length > 1000)
-      throw new AppError("Summary must be at most 1,000 characters");
+    if (typeof name !== "string" || !name.trim())
+      throw new AppError("Conversation name required");
+    if (typeof summary !== "string")
+      throw new AppError("Summary must be a string");
     if (!summary.trim())
       summary =
         kind === "self"
@@ -271,14 +287,17 @@ export class Store {
     };
   }
   chats(actor = null) {
-    return (
-      actor
-        ? this.all(
-            "SELECT c.id FROM chats c JOIN members m ON c.id=m.chat_id WHERE m.agent_id=?",
-            actor,
-          )
-        : this.all("SELECT id FROM chats ORDER BY created_at")
-    ).map((c) => this.chat(c.id));
+    const rows = actor
+      ? this.all(
+          "SELECT c.* FROM chats c JOIN members m ON c.id=m.chat_id WHERE m.agent_id=?",
+          actor,
+        )
+      : this.all("SELECT * FROM chats ORDER BY created_at");
+    if (!rows.length) return [];
+    const membersByChat = new Map(rows.map((c) => [c.id, []]));
+    for (const m of this.all("SELECT chat_id,agent_id FROM members"))
+      membersByChat.get(m.chat_id)?.push(m.agent_id);
+    return rows.map((c) => ({ ...c, members: membersByChat.get(c.id) || [] }));
   }
   addMember(chat, id, actor = null) {
     if (actor) this.requireMember(chat, actor);
@@ -299,8 +318,8 @@ export class Store {
   send(chat, sender, body) {
     if (sender) this.requireMember(chat, sender);
     else this.chat(chat);
-    if (typeof body !== "string" || !body.trim() || body.length > 16000)
-      throw new AppError("Message must contain 1–16,000 characters");
+    if (typeof body !== "string" || !body.trim())
+      throw new AppError("Message body is required");
     const r = this.run(
       "INSERT INTO messages(chat_id,sender_id,body,created_at) VALUES(?,?,?,?)",
       chat,
@@ -324,14 +343,8 @@ export class Store {
   updateChat(id, name, summary, actor = null) {
     if (actor) this.requireMember(id, actor);
     this.chat(id);
-    if (
-      typeof name !== "string" ||
-      !name.trim() ||
-      name.length > 100 ||
-      typeof summary !== "string" ||
-      summary.length > 1000
-    )
-      throw new AppError("Valid name and short summary required");
+    if (typeof name !== "string" || !name.trim() || typeof summary !== "string")
+      throw new AppError("Valid name and summary required");
     this.run(
       "UPDATE chats SET name=?,summary=? WHERE id=?",
       name.trim(),
@@ -403,44 +416,54 @@ export class Store {
         chat,
         actor,
       )?.last_id || 0;
+    const unread = this.get(
+      "SELECT COUNT(*) AS n, MIN(id) AS first_id FROM messages WHERE chat_id=? AND id>? AND (sender_id IS NULL OR sender_id!=?) AND NOT EXISTS(SELECT 1 FROM message_reads r WHERE r.message_id=messages.id AND r.agent_id=?)",
+      chat,
+      last,
+      actor,
+      actor,
+    );
     return {
       agent_id: actor,
       last_read_id: last,
-      unread_count: this.get(
-        "SELECT COUNT(*) AS n FROM messages WHERE chat_id=? AND id>? AND (sender_id IS NULL OR sender_id!=?) AND NOT EXISTS(SELECT 1 FROM message_reads r WHERE r.message_id=messages.id AND r.agent_id=?)",
-        chat,
-        last,
-        actor,
-        actor,
-      ).n,
+      unread_count: unread.n,
+      first_unread_id: unread.first_id ?? null,
     };
   }
   snapshot(actor = null) {
+    const seen = actor
+      ? new Set(
+          this.all(
+            "SELECT message_id FROM message_reads WHERE agent_id=?",
+            actor,
+          ).map((r) => r.message_id),
+        )
+      : null;
     return {
       agents: actor
         ? this.agents().map(({ id, name, status }) => ({ id, name, status }))
         : this.agents(),
-      chats: this.chats(actor).map((c) => ({
-        ...c,
-        messages: this.messages(c.id, actor),
-        read_states: (actor ? [actor] : c.members).map((id) =>
+      chats: this.chats(actor).map((c) => {
+        const messages = this.messages(c.id, actor);
+        const read_states = (actor ? [actor] : c.members).map((id) =>
           this.readState(c.id, id),
-        ),
-        ...(actor
-          ? {
-              new_since_last_read: this.messages(c.id, actor).filter(
-                (m) =>
-                  m.id > this.readState(c.id, actor).last_read_id &&
-                  m.sender_id !== actor &&
-                  !this.get(
-                    "SELECT 1 FROM message_reads WHERE agent_id=? AND message_id=?",
-                    actor,
-                    m.id,
-                  ),
-              ),
-            }
-          : {}),
-      })),
+        );
+        return {
+          ...c,
+          messages,
+          read_states,
+          ...(actor
+            ? {
+                new_since_last_read: messages.filter(
+                  (m) =>
+                    m.id > read_states[0].last_read_id &&
+                    m.sender_id !== actor &&
+                    !seen.has(m.id),
+                ),
+              }
+            : {}),
+        };
+      }),
     };
   }
 }

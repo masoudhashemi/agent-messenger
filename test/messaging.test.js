@@ -270,3 +270,40 @@ test("note-only turns reuse a named self thread across runs", async () => {
   );
   s.db.close();
 });
+test("working notes and group actions default missing names and accept long names without failing", async () => {
+  const { s, a, b } = fixture();
+  const h = new Harness(
+    s,
+    () => {},
+    async () =>
+      JSON.stringify({
+        working_note: {
+          body: "Plan without an explicit self-thread name.",
+        },
+        actions: [
+          {
+            type: "group",
+            members: [b.id],
+            body: "Hello group without explicit name",
+          },
+          {
+            type: "group",
+            name: "L".repeat(250),
+            members: [b.id],
+            summary: "S".repeat(2500),
+            body: "Long group title and summary",
+          },
+          { type: "finish" },
+        ],
+      }),
+  );
+  h.start([a.id], "Collaborate", 1);
+  while (h.run.status === "running") await new Promise((r) => setTimeout(r, 5));
+  assert.equal(h.history[0].status, "ok");
+  assert.equal(
+    s.chats(a.id).filter((c) => c.kind === "self")[0].name,
+    "Working notes",
+  );
+  assert.equal(s.chats(a.id).filter((c) => c.kind === "group").length, 2);
+  s.db.close();
+});

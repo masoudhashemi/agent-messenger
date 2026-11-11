@@ -61,21 +61,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if response.status != 200:
                 self.send_error(response.status if response.status in (404, 410, 429) else 502, 'Package request failed')
                 return
-            size = int(response.getheader('Content-Length', '0'))
-            if not size or size > MAX_FILE:
-                self.send_error(413, 'Package response exceeds gateway limits')
-                return
-            with budget_lock:
-                if used + size > MAX_TOTAL:
-                    self.send_error(413, 'Install download budget exceeded')
+            raw_length = response.getheader('Content-Length')
+            if raw_length is not None:
+                size = int(raw_length)
+                if size <= 0 or size > MAX_FILE:
+                    self.send_error(413, 'Package response exceeds gateway limits')
                     return
-                used += size
-            if host == 'pypi.org':
-                body = response.read(MAX_FILE + 1)
-                # uv sees only local gateway URLs, including wheel metadata links.
-                body = body.replace(b'https://files.pythonhosted.org/', b'http://127.0.0.1:8123/files/')
+                with budget_lock:
+                    if used + size > MAX_TOTAL:
+                        self.send_error(413, 'Install download budget exceeded')
+                        return
+                    used += size
+            else:
+                size = None
+            if host == 'pypi.org' or size is None:
+                body = response.read((size if size is not None else MAX_FILE) + 1)
+                if not body or len(body) > (size if size is not None else MAX_FILE):
+                    self.send_error(413, 'Package response exceeds gateway limits')
+                    return
+                if size is None:
+                    with budget_lock:
+                        if used + len(body) > MAX_TOTAL:
+                            self.send_error(413, 'Install download budget exceeded')
+                            return
+                        used += len(body)
+                if host == 'pypi.org':
+                    # uv sees only local gateway URLs, including wheel metadata links.
+                    body = body.replace(b'https://files.pythonhosted.org/', b'http://127.0.0.1:8123/files/')
                 self.send_response(200)
-                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Type', 'text/html; charset=utf-8' if host == 'pypi.org' else 'application/octet-stream')
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)

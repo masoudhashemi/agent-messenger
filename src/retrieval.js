@@ -113,14 +113,22 @@ export class Retrieval {
     this.scope(actor);
     offset = integer(offset, 0, 0, 1000000);
     limit = integer(limit, 20, 1, 50);
-    const chats = this.store
-      .all(
-        `SELECT c.*,COALESCE((SELECT MAX(id) FROM messages WHERE chat_id=c.id),0) AS last_message_id FROM chats c JOIN members m ON m.chat_id=c.id WHERE m.agent_id=? ORDER BY last_message_id DESC,c.id LIMIT ? OFFSET ?`,
-        actor,
-        limit + 1,
-        offset,
-      )
-      .map((c) => ({ ...c, ...this.store.readState(c.id, actor) }));
+    const rows = this.store.all(
+      `SELECT c.*,COALESCE((SELECT MAX(id) FROM messages WHERE chat_id=c.id),0) AS last_message_id FROM chats c JOIN members m ON m.chat_id=c.id WHERE m.agent_id=? ORDER BY last_message_id DESC,c.id LIMIT ? OFFSET ?`,
+      actor,
+      limit + 1,
+      offset,
+    );
+    const membersByChat = new Map(rows.map((c) => [c.id, []]));
+    if (rows.length) {
+      for (const m of this.store.all("SELECT chat_id,agent_id FROM members"))
+        membersByChat.get(m.chat_id)?.push(m.agent_id);
+    }
+    const chats = rows.map((c) => ({
+      ...c,
+      members: membersByChat.get(c.id) || [],
+      ...this.store.readState(c.id, actor),
+    }));
     return page(chats, offset, limit);
   }
   readChat(actor, a) {
@@ -137,10 +145,10 @@ export class Retrieval {
     for (const row of rows.slice(0, limit)) {
       const entry = {
         ...row,
-        body: row.body.slice(0, 2000),
-        body_truncated: row.body.length > 2000,
+        body: row.body,
+        body_truncated: false,
       };
-      if (bytes([...messages, entry]) > 12000) break;
+      if (messages.length && bytes([...messages, entry]) > 32000) break;
       messages.push(entry);
     }
     return {
@@ -158,7 +166,7 @@ export class Retrieval {
     if (!m) throw new AppError("Message unavailable", 403);
     this.scope(actor, m.chat_id);
     const offset = integer(a.offset, 0, 0, m.body.length),
-      limit = integer(a.limit, 6000, 1, 8000);
+      limit = integer(a.limit, 64000, 1, 64000);
     return {
       ...m,
       body: m.body.slice(offset, offset + limit),

@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Projects } from "../src/projects.js";
-test("projects start empty and isolate agent credentials, threads and state", () => {
+test("projects start with an editable default lead agent and isolate credentials, threads and state", () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-projects-"));
   const projects = new Projects(dir);
   try {
@@ -20,7 +20,17 @@ test("projects start empty and isolate agent credentials, threads and state", ()
     const sa = projects.get(a.id).store,
       sb = projects.get(b.id).store;
     assert.equal(a.chats, 0);
-    assert.equal(a.agents, 0);
+    assert.equal(a.agents, 1);
+    assert.equal(b.agents, 1);
+    assert.equal(sa.agents()[0].name, "Lead");
+    assert.match(sa.agents()[0].prompt, /First project/);
+    assert.match(sb.agents()[0].prompt, /Second project/);
+    const updated = sa.updateAgent(sa.agents()[0].id, {
+      name: "Coordinator",
+      prompt: "Custom coordinator prompt",
+    });
+    assert.equal(updated.name, "Coordinator");
+    assert.equal(updated.prompt, "Custom coordinator prompt");
     assert.equal(b.chats, 0);
     const agent = sa.createAgent("Writer", "Write");
     const chat = sa.createChat("Notes", "self", [agent.id]);

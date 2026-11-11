@@ -10,8 +10,9 @@ import { publishFileChanges } from "./file-changes.js";
 const port = Number(process.env.PORT || 3210),
   sessions = new Set(),
   events = new Set();
-const notify = () => {
-  for (const r of events) r.write("data: update\n\n");
+const notify = (projectId = "") => {
+  const payload = `data: ${projectId || "update"}\n\n`;
+  for (const r of events) r.write(payload);
 };
 const projects = new Projects(
   process.env.PROJECTS_DIR || "data/projects",
@@ -50,8 +51,18 @@ const server = http.createServer(async (req, res) => {
     ) {
       const root = url.pathname === "/";
       if (root) {
-        const token = randomBytes(32).toString("hex");
-        sessions.add(token);
+        const existing = req.headers.cookie?.match(
+          /(?:^|; )relay_session=([^;]+)/,
+        )?.[1];
+        const token =
+          existing && sessions.has(existing)
+            ? existing
+            : randomBytes(32).toString("hex");
+        if (!sessions.has(token)) {
+          if (sessions.size >= 256)
+            sessions.delete(sessions.values().next().value);
+          sessions.add(token);
+        }
         res.setHeader(
           "Set-Cookie",
           `relay_session=${token}; HttpOnly; SameSite=Strict; Path=/`,
@@ -262,8 +273,12 @@ const server = http.createServer(async (req, res) => {
     } else if (path === "/settings" && !who) result = harness.configure(body);
     else if (path === "/agents" && !who)
       result = store.createAgent(body.name, body.prompt, body.tools || []);
-    else if (path === "/agent-tools" && !who)
-      result = store.setAgentTools(body.agent_id, body.tools);
+    else if ((path === "/agent-tools" || path === "/agent-details") && !who)
+      result = store.updateAgent(body.agent_id, {
+        name: body.name,
+        prompt: body.prompt,
+        tools: body.tools,
+      });
     else if (path === "/chats")
       result = store.createChat(
         body.name,
@@ -339,7 +354,13 @@ const server = http.createServer(async (req, res) => {
         who,
       );
     else if (path === "/run" && !who)
-      result = harness.start(body.ids, body.task, body.maxTurns);
+      result = harness.start(
+        body.ids,
+        (typeof body.task === "string" && body.task.trim()) ||
+          project.summary?.trim() ||
+          project.name,
+        body.maxTurns,
+      );
     else if (path === "/stop" && !who) {
       harness.stop();
       result = { ok: true };
@@ -364,7 +385,7 @@ const server = http.createServer(async (req, res) => {
         beforeFiles,
       );
     }
-    notify();
+    notify(project.id);
     json(result);
   } catch (e) {
     json(
