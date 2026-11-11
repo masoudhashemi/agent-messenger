@@ -21,7 +21,7 @@ export function buildContext(
     receipts = [],
     included = [];
   const payload = {
-    you: { id: actor, name: agent.name },
+    you: { id: actor, name: agent.name, tools: agent.tools || [] },
     task,
     context: { agents: [], chats: [], active_chat: null, working_thread: null },
     incoming_requests: [],

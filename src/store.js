@@ -1,3 +1,6 @@
+import { validateManifest, httpPluginTool } from "./http-plugins.js";
+import { chmodSync } from "node:fs";
+import { tools as toolRegistry } from "./tools/index.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 export class AppError extends Error {
@@ -10,7 +13,9 @@ export const hash = (value) => createHash("sha256").update(value).digest("hex");
 export class Store {
   constructor(path = ":memory:") {
     this.db = new DatabaseSync(path);
+    if (path !== ":memory:") chmodSync(path, 0o600);
     this.db.exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
+   CREATE TABLE IF NOT EXISTS plugins(name TEXT PRIMARY KEY,manifest TEXT NOT NULL,credential TEXT NOT NULL DEFAULT '');
    CREATE TABLE IF NOT EXISTS runtime(id INTEGER PRIMARY KEY CHECK(id=1),state TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS agents(id TEXT PRIMARY KEY,name TEXT NOT NULL,prompt TEXT NOT NULL,token_hash TEXT NOT NULL,status TEXT DEFAULT 'idle',error TEXT);
    CREATE TABLE IF NOT EXISTS chats(id TEXT PRIMARY KEY,name TEXT NOT NULL,kind TEXT NOT NULL,summary TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL);
@@ -19,6 +24,10 @@ export class Store {
    CREATE TABLE IF NOT EXISTS message_reads(agent_id TEXT REFERENCES agents(id),message_id INTEGER,PRIMARY KEY(agent_id,message_id));
    CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,chat_id TEXT REFERENCES chats(id),sender_id TEXT,body TEXT NOT NULL,created_at TEXT NOT NULL);
   `);
+    if (!this.all("PRAGMA table_info(agents)").some((c) => c.name === "tools"))
+      this.db.exec(
+        "ALTER TABLE agents ADD COLUMN tools TEXT NOT NULL DEFAULT '[]'",
+      );
     this.db
       .prepare("UPDATE agents SET status='idle' WHERE status='running'")
       .run();
@@ -44,16 +53,121 @@ export class Store {
   }
   agent(id) {
     const a = this.get(
-      "SELECT id,name,prompt,status,error FROM agents WHERE id=?",
+      "SELECT id,name,prompt,status,error,tools FROM agents WHERE id=?",
       id,
     );
     if (!a) throw new AppError("Agent not found", 404);
-    return a;
+    return { ...a, tools: JSON.parse(a.tools) };
   }
   agents() {
-    return this.all("SELECT id,name,prompt,status,error FROM agents");
+    return this.all("SELECT id,name,prompt,status,error,tools FROM agents").map(
+      (a) => ({ ...a, tools: JSON.parse(a.tools) }),
+    );
   }
-  createAgent(name, prompt) {
+  plugins() {
+    return this.all(
+      "SELECT name,manifest,length(credential)>0 AS has_credential FROM plugins ORDER BY name",
+    ).map((row) => ({
+      ...JSON.parse(row.manifest),
+      has_credential: !!row.has_credential,
+    }));
+  }
+  savePlugin(input, credential) {
+    const manifest = validateManifest(input);
+    if (toolRegistry.has(manifest.name))
+      throw new AppError("Cannot replace a built-in tool");
+    if (
+      credential !== undefined &&
+      (typeof credential !== "string" ||
+        credential.length > 4000 ||
+        /[\r\n]/.test(credential))
+    )
+      throw new AppError(
+        "Credential must be a single-line string of at most 4,000 characters",
+      );
+    const old = this.get(
+      "SELECT manifest,credential FROM plugins WHERE name=?",
+      manifest.name,
+    );
+    if (!old && this.plugins().length >= 20)
+      throw new AppError("A project can have at most 20 HTTP plugins");
+    const previous = old ? JSON.parse(old.manifest) : null;
+    const sameDestination =
+      previous?.endpoint === manifest.endpoint &&
+      JSON.stringify(previous.auth) === JSON.stringify(manifest.auth);
+    const secret =
+      manifest.auth.type === "none"
+        ? ""
+        : credential !== undefined
+          ? credential
+          : sameDestination
+            ? old.credential
+            : "";
+    this.run(
+      "INSERT INTO plugins(name,manifest,credential) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET manifest=excluded.manifest,credential=excluded.credential",
+      manifest.name,
+      JSON.stringify(manifest),
+      secret,
+    );
+    return this.plugins().find((p) => p.name === manifest.name);
+  }
+  removePlugin(name) {
+    if (!this.get("SELECT name FROM plugins WHERE name=?", name))
+      throw new AppError("Plugin not found", 404);
+    this.db.exec("BEGIN");
+    try {
+      for (const agent of this.agents())
+        this.run(
+          "UPDATE agents SET tools=? WHERE id=?",
+          JSON.stringify(agent.tools.filter((t) => t !== name)),
+          agent.id,
+        );
+      this.run("DELETE FROM plugins WHERE name=?", name);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return { ok: true };
+  }
+  availableTools() {
+    const registry = new Map(toolRegistry);
+    for (const manifest of this.plugins())
+      registry.set(
+        manifest.name,
+        httpPluginTool(
+          manifest,
+          () =>
+            this.get(
+              "SELECT credential FROM plugins WHERE name=?",
+              manifest.name,
+            )?.credential || "",
+        ),
+      );
+    return registry;
+  }
+  validateTools(tools) {
+    if (
+      !Array.isArray(tools) ||
+      tools.some((t) => !this.availableTools().has(t))
+    )
+      throw new AppError(
+        "Supported optional tools: " +
+          [...this.availableTools().keys()].join(", "),
+      );
+    return [...new Set(tools)];
+  }
+  setAgentTools(id, tools) {
+    this.agent(id);
+    this.run(
+      "UPDATE agents SET tools=? WHERE id=?",
+      JSON.stringify(this.validateTools(tools)),
+      id,
+    );
+    return this.agent(id);
+  }
+  createAgent(name, prompt, tools = []) {
+    tools = this.validateTools(tools);
     if (
       typeof name !== "string" ||
       !name.trim() ||
@@ -68,11 +182,12 @@ export class Store {
     const id = randomUUID(),
       token = randomBytes(32).toString("hex");
     this.run(
-      "INSERT INTO agents(id,name,prompt,token_hash) VALUES(?,?,?,?)",
+      "INSERT INTO agents(id,name,prompt,token_hash,tools) VALUES(?,?,?,?,?)",
       id,
       name.trim(),
       prompt,
       hash(token),
+      JSON.stringify(tools),
     );
     return { ...this.agent(id), token };
   }

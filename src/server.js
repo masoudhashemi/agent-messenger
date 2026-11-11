@@ -1,3 +1,4 @@
+import { toolCatalog } from "./tools/index.js";
 import http from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -5,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { AppError } from "./store.js";
 import { Projects } from "./projects.js";
+import { publishFileChanges } from "./file-changes.js";
 const port = Number(process.env.PORT || 3210),
   sessions = new Set(),
   events = new Set();
@@ -43,6 +45,7 @@ const server = http.createServer(async (req, res) => {
         "/format.js",
         "/diff.js",
         "/commands.js",
+        "/plugins.js",
       ].includes(url.pathname)
     ) {
       const root = url.pathname === "/";
@@ -114,6 +117,10 @@ const server = http.createServer(async (req, res) => {
       } else throw new AppError("Not found", 404);
       return;
     }
+    if (isAdmin && path === "/projects/delete" && req.method === "POST") {
+      json(projects.delete(body.id, body));
+      return;
+    }
     if (isAdmin && path === "/events" && req.method === "GET") {
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
@@ -146,6 +153,8 @@ const server = http.createServer(async (req, res) => {
               ...store.snapshot(),
               ...harness.state(),
               project,
+              web_search: harness.webSearch.status(),
+              tools: toolCatalog(harness),
               coding: {
                 ...workspace.info(),
                 files: [...workspace.list(), ...workspace.unsupported],
@@ -154,6 +163,10 @@ const server = http.createServer(async (req, res) => {
               },
             },
       );
+      return;
+    }
+    if (req.method === "GET" && path === "/plugins" && !who) {
+      json(store.plugins());
       return;
     }
     if (req.method === "GET" && path === "/messages") {
@@ -212,8 +225,30 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method !== "POST") throw new AppError("Not found", 404);
+    const fileAction = {
+      "/files/write": "write_file",
+      "/files/edit": "edit_file",
+      "/files/sed": "sed",
+      "/python": "run_python",
+      "/uv": "uv_" + body.action,
+    }[path];
+    const beforeFiles =
+      who && fileAction
+        ? new Map(workspace.list().map((f) => [f.path, f.revision]))
+        : null;
     let result;
-    if (path === "/retrieve")
+    if (path === "/plugins/save" && !who)
+      result = store.savePlugin(body.manifest, body.credential);
+    else if (path === "/plugins/remove" && !who)
+      result = store.removePlugin(body.name);
+    else if (path === "/plugins/test" && !who) {
+      if (!store.plugins().some((p) => p.name === body.name))
+        throw new AppError("Plugin not found", 404);
+      result = await store
+        .availableTools()
+        .get(body.name)
+        .execute({}, { arguments: body.arguments });
+    } else if (path === "/retrieve")
       result = harness.retrieval.execute(who || body.agent_id, body);
     else if (path === "/workspace/open" && !who) {
       const command =
@@ -226,7 +261,9 @@ const server = http.createServer(async (req, res) => {
       result = { ok: true };
     } else if (path === "/settings" && !who) result = harness.configure(body);
     else if (path === "/agents" && !who)
-      result = store.createAgent(body.name, body.prompt);
+      result = store.createAgent(body.name, body.prompt, body.tools || []);
+    else if (path === "/agent-tools" && !who)
+      result = store.setAgentTools(body.agent_id, body.tools);
     else if (path === "/chats")
       result = store.createChat(
         body.name,
@@ -307,6 +344,26 @@ const server = http.createServer(async (req, res) => {
       harness.stop();
       result = { ok: true };
     } else throw new AppError("Not found", 404);
+    if (beforeFiles) {
+      const focus = store.get(
+        "SELECT * FROM agent_focus WHERE agent_id=?",
+        who,
+      );
+      const selfChat =
+        focus?.self_chat_id ||
+        store.chats(who).find((c) => c.kind === "self")?.id ||
+        store.createChat("File changes", "self", [who], who).id;
+      publishFileChanges(
+        store,
+        workspace,
+        who,
+        selfChat,
+        focus?.chat_id,
+        fileAction,
+        result,
+        beforeFiles,
+      );
+    }
     notify();
     json(result);
   } catch (e) {

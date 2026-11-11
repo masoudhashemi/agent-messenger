@@ -1,6 +1,7 @@
+import { pluginUI } from "./plugins.js";
 import { commandArguments } from "./commands.js";
 import { lineDiff } from "/diff.js";
-import { renderMessage, preview } from "/format.js";
+import { renderMessage, preview, renderDiffPreview } from "/format.js";
 const projectId = new URLSearchParams(location.search).get("project");
 let state = { agents: [], chats: [], history: [] },
   selected = null,
@@ -74,7 +75,38 @@ async function refresh() {
 }
 function renderHome(projects) {
   $("#app").innerHTML =
-    `<div class="project-home"><header class="home-nav"><span class="home-brand">r.</span><span>RELAY <small>/ AGENT WORKSPACES</small></span><span class="home-local"><i class="dot"></i>Local workspace</span></header><main class="home-content"><div class="home-heading"><div><div class="eyebrow">Your agent workspaces</div><h1>Ideas in motion.</h1><p>Pick up where your agents left off, or give them something new to explore.</p></div><button class="primary" id="new-project">＋ New project</button></div><div class="section-head"><h2>All projects <small>${projects.length}</small></h2><span class="muted">Separate teams. Persistent conversations.</span></div><div class="project-grid">${projects.map((p) => `<article class="project-card"><div class="heading"><div class="avatar">${esc(initials(p.name))}</div><span class="state ${p.run?.status === "running" ? "running" : ""}">${esc(p.run?.status?.replaceAll("_", " ") || "Ready to start")}</span></div><h2>${esc(p.name)}</h2><p class="project-summary">${esc(p.summary || "A fresh workspace for your agents.")}</p><p class="project-path" title="${esc(p.workspace_path || "")}">${esc(p.workspace_path || "")}</p><div class="project-counts"><span><strong>${p.agents}</strong> agents</span><span><strong>${p.chats}</strong> threads</span><span><strong>${p.messages}</strong> messages</span></div><p class="muted">${p.run ? `Last objective: ${esc(p.run.task.slice(0, 140))}` : "No runs yet. Add agents and set an objective."}</p><div class="project-card-footer"><a class="review-link" href="/?project=${p.id}">Review ↗</a><button class="${p.run?.task ? "primary" : ""}" data-resume="${p.id}">${p.run?.status === "running" ? "Open live" : p.run?.task ? "Resume" : "Open project"} →</button></div></article>`).join("") || '<div class="home-empty"><div class="avatar">＋</div><h2>Your next project starts here.</h2><p>Create a project, add agents, and let conversations grow as they work.</p></div>'}</div><p class="home-footnote">Each project has its own agents, private notes, and conversation history. New projects start empty.</p></main></div>`;
+    `<div class="project-home"><header class="home-nav"><span class="home-brand">r.</span><span>RELAY <small>/ AGENT WORKSPACES</small></span><span class="home-local"><i class="dot"></i>Local workspace</span></header><main class="home-content"><div class="home-heading"><div><div class="eyebrow">Your agent workspaces</div><h1>Ideas in motion.</h1><p>Pick up where your agents left off, or give them something new to explore.</p></div><button class="primary" id="new-project">＋ New project</button></div><div class="section-head"><h2>All projects <small>${projects.length}</small></h2><span class="muted">Separate teams. Persistent conversations.</span></div><div class="project-grid">${projects.map((p) => `<article class="project-card"><div class="heading"><div class="avatar">${esc(initials(p.name))}</div><span class="state ${p.run?.status === "running" ? "running" : ""}">${esc(p.run?.status?.replaceAll("_", " ") || "Ready to start")}</span></div><h2>${esc(p.name)}</h2><p class="project-summary">${esc(p.summary || "A fresh workspace for your agents.")}</p><p class="project-path" title="${esc(p.workspace_path || "")}">${esc(p.workspace_path || "")}</p><div class="project-counts"><span><strong>${p.agents}</strong> agents</span><span><strong>${p.chats}</strong> threads</span><span><strong>${p.messages}</strong> messages</span></div><p class="muted">${p.run ? `Last objective: ${esc(p.run.task.slice(0, 140))}` : "No runs yet. Add agents and set an objective."}</p><div class="project-card-footer"><button class="quiet delete-project" data-delete-project="${p.id}" aria-label="Delete ${esc(p.name)}">Delete</button><a class="review-link" href="/?project=${p.id}">Review ↗</a><button class="${p.run?.task ? "primary" : ""}" data-resume="${p.id}">${p.run?.status === "running" ? "Open live" : p.run?.task ? "Resume" : "Open project"} →</button></div></article>`).join("") || '<div class="home-empty"><div class="avatar">＋</div><h2>Your next project starts here.</h2><p>Create a project, add agents, and let conversations grow as they work.</p></div>'}</div><p class="home-footnote">Each project has its own agents, private notes, and conversation history. New projects start empty.</p></main></div>`;
+  document.querySelectorAll("[data-delete-project]").forEach((button) => {
+    button.onclick = () => {
+      const project = projects.find(
+        (p) => p.id === button.dataset.deleteProject,
+      );
+      modal(
+        `<h2>Delete ${esc(project.name)}?</h2><p>This permanently deletes the project's agents, chats, tasks, and execution records. This cannot be undone.</p><label class="check"><input type="checkbox" name="delete_artifacts"> Also delete all project files and artifacts</label><p class="muted">Includes the workspace folder below, its Python environment, Git history, and package cache. Leave unchecked to keep these on disk.</p><p class="delete-workspace-path">${esc(project.workspace_path)}</p><label>Type <strong>${esc(project.name)}</strong> to confirm</label><input name="confirm_name" required autocomplete="off">`,
+        async (form, dialog) => {
+          await api(
+            "projects/delete",
+            {
+              id: project.id,
+              confirm_name: form.get("confirm_name"),
+              delete_artifacts: form.has("delete_artifacts"),
+            },
+            null,
+          );
+          dialog.close();
+          await refresh();
+          toast(
+            form.has("delete_artifacts")
+              ? "Project and artifacts deleted"
+              : "Project deleted. Workspace files and Git history kept on disk.",
+          );
+        },
+      );
+      const save = $("#modal-form button.primary");
+      save.textContent = "Delete project";
+      save.classList.add("danger");
+    };
+  });
   $("#new-project").onclick = () =>
     modal(
       '<h2>New project</h2><p class="muted">Start with an empty workspace. Add agents and let them build their own conversations.</p><label>Name</label><input name="name" maxlength="100" required placeholder="e.g. Research assistant team"><label>Project folder (optional)</label><input name="workspace_path" placeholder="/Users/you/Projects/my-project"><p class="muted">Choose a new or empty folder. Leave blank to create one automatically.</p><label>Short description</label><textarea name="summary" maxlength="1000" rows="3" placeholder="What is this project for?"></textarea>',
@@ -147,7 +179,7 @@ function render() {
   const c = state.chats.find((c) => c.id === selected),
     running = state.run?.status === "running";
   $("#app").innerHTML =
-    `<div class="layout"><nav class="rail"><div class="brand">r.</div><div class="rail-icon">☷</div><div title="Private agent workspace">◈</div><div class="rail-bottom">RELAY / WORKSPACE</div></nav><aside class="sidebar"><div class="sidebar-top"><div class="heading"><h1>Conversations</h1><button class="quiet" id="new-chat" title="New conversation">＋</button></div><p class="subtitle"><a href="/">← Projects</a> / ${esc(state.project?.name || "Workspace")}</p><input id="search" class="search" placeholder="Search conversations…" value="${esc(query)}"><div class="tabs">${[
+    `<div class="layout"><nav class="rail"><div class="brand">r.</div><div class="rail-icon">☷</div><div title="Private agent workspace">◈</div><div class="rail-bottom">RELAY / WORKSPACE</div></nav><aside class="sidebar"><div class="sidebar-top"><div class="heading"><h1>Conversations</h1><button class="quiet" id="new-chat" title="New conversation">＋</button></div><p class="subtitle"><a href="/">← Projects</a> / ${esc(state.project?.name || "Workspace")}</p><button class="quiet" id="sidebar-add-agent">＋ Add agent</button><input id="search" class="search" placeholder="Search conversations…" value="${esc(query)}"><div class="tabs">${[
       ["all", "All"],
       ["group", "Groups"],
       ["direct", "Direct"],
@@ -172,7 +204,7 @@ function render() {
         )
         .join("") ||
       '<p class="muted" style="padding:12px">Your conversations will appear here.</p>'
-    }</div><div class="sidebar-foot"><button id="search-knowledge" class="quiet" title="Search accessible messages, source and executions">⌕ Search</button><button id="code-workspace" class="quiet">⌘ Code workspace <small>${state.coding?.files.length || 0}</small></button></div></aside><main class="main">${c ? `<header class="chat-head"><div class="avatar ${c.kind}">${esc(icon(c))}</div><div><h2>${esc(c.name)}</h2><p>${esc(c.members.map(name).join(", "))}</p></div><span class="badge">${c.kind === "self" ? "Private self-thread" : c.kind === "direct" ? "Private conversation" : "Members only"}</span><button class="quiet" id="edit-chat" title="Edit conversation">⋯</button></header><div class="messages"><div class="date">${esc(c.summary || "This is the beginning of this conversation.")}</div>${c.messages.map((m) => `<article class="message ${!m.sender_id ? "operator" : ""}"><div class="avatar">${esc(initials(name(m.sender_id)))}</div><div class="message-content"><div class="message-meta">${esc(name(m.sender_id))}<time>${time(m.created_at)}</time></div><div class="bubble">${renderMessage(m.body, state.chats, m.id)}</div>${deliveryStatus(m, c)}</div></article>`).join("") || '<div class="empty"><div class="avatar">↗</div><h2>Space to think together.</h2><p>Send a request here. The agents in this conversation will start automatically.</p></div>'}</div><form class="composer" id="compose"><div class="compose-box"><textarea id="message" rows="1" placeholder="Message as operator…">${esc(drafts[c.id] || "")}</textarea><button class="primary" title="Send message">↑</button></div><div class="composer-note">Sending wakes ${c.kind === "self" ? "this agent only" : "the conversation members"} · Ctrl/⌘ + Enter to send</div></form>` : `<div class="empty"><div class="avatar">r.</div><h2>Give your agents a place to talk.</h2><p>Add agents with system prompts, set an objective, and run the team. Conversations appear as agents create them; every turn starts with private working notes.</p><button class="quiet" id="welcome-agent">${state.agents.length ? "Add an agent" : "Create your first agent"}</button></div>`}</main><aside class="inspector"><section class="section"><div class="section-head"><h2>Workspace agents <small>${state.agents.length}</small></h2><button id="new-agent">＋ Add</button></div>${state.agents.map((a) => `<div class="agent"><div class="avatar">${esc(initials(a.name))}</div><div><div class="agent-name">${esc(a.name)}</div><div class="agent-role">${esc(a.prompt.slice(0, 32))}…</div>${a.error ? `<div class="error-text">${esc(a.error)}</div>` : ""}</div><span class="state ${a.status}">${a.status}</span></div>`).join("") || '<p class="muted">Build a team of specialized agents.</p>'}</section><section class="section run-box"><div class="heading"><h2>Agent harness</h2><span class="eyebrow">Gemma</span></div><p class="muted">Set a shared objective. Agents choose where to talk.</p><textarea id="task" placeholder="What should the team work on?">${esc(task ?? state.run?.task ?? "")}</textarea><div class="agent-creation-settings"><label><input type="checkbox" id="allow-agent-creation" ${state.settings?.allow_agent_creation ? "checked" : ""}> Allow agents to create teammates</label><label>New agents per run <input type="number" id="max-new-agents" min="1" max="10" value="${state.settings?.max_new_agents || 3}"></label><small class="muted">Shares this run’s turn budget. Private chats stay private.</small></div><div class="run-controls"><input id="turns" type="number" min="1" max="100" value="${esc(turns || 12)}" aria-label="Maximum turns"><button class="primary" id="run" ${!state.agents.length ? "disabled" : ""}>${running ? "■ Stop run" : "▶ Run team"}</button></div><p class="muted">${state.run ? `${esc(state.run.status.replaceAll("_", " "))} · ${state.run.turns}/${state.run.maxTurns} turns` : "Bounded turns · All workspace agents"}</p><p class="muted">Selective context · ${
+    }</div><div class="sidebar-foot"><button id="manage-plugins" class="quiet">⊞ Tools & plugins</button><button id="search-knowledge" class="quiet" title="Search accessible messages, source and executions">⌕ Search</button><button id="code-workspace" class="quiet">⌘ Code workspace <small>${state.coding?.files.length || 0}</small></button></div></aside><main class="main">${c ? `<header class="chat-head"><div class="avatar ${c.kind}">${esc(icon(c))}</div><div><h2>${esc(c.name)}</h2><p>${esc(c.members.map(name).join(", "))}</p></div><span class="badge">${c.kind === "self" ? "Private self-thread" : c.kind === "direct" ? "Private conversation" : "Members only"}</span><button class="quiet" id="edit-chat" title="Edit conversation">⋯</button></header><div class="messages"><div class="date">${esc(c.summary || "This is the beginning of this conversation.")}</div>${c.messages.map((m) => `<article class="message ${!m.sender_id ? "operator" : ""}"><div class="avatar">${esc(initials(name(m.sender_id)))}</div><div class="message-content"><div class="message-meta">${esc(name(m.sender_id))}<time>${time(m.created_at)}</time></div><div class="bubble">${renderMessage(m.body, state.chats, m.id)}</div>${deliveryStatus(m, c)}</div></article>`).join("") || '<div class="empty"><div class="avatar">↗</div><h2>Space to think together.</h2><p>Send a request here. The agents in this conversation will start automatically.</p></div>'}</div><form class="composer" id="compose"><div class="compose-box"><textarea id="message" rows="1" placeholder="Message as operator…">${esc(drafts[c.id] || "")}</textarea><button class="primary" title="Send message">↑</button></div><div class="composer-note">Sending wakes ${c.kind === "self" ? "this agent only" : "the conversation members"} · Ctrl/⌘ + Enter to send</div></form>` : `<div class="empty"><div class="avatar">r.</div><h2>Give your agents a place to talk.</h2><p>Add agents with system prompts, set an objective, and run the team. Conversations appear as agents create them; every turn starts with private working notes.</p><button class="quiet" id="welcome-agent">${state.agents.length ? "Add an agent" : "Create your first agent"}</button></div>`}</main><aside class="inspector"><section class="section"><div class="section-head"><h2>Workspace agents <small>${state.agents.length}</small></h2><button id="new-agent">＋ Add</button></div>${state.agents.map((a) => `<div class="agent"><div class="avatar">${esc(initials(a.name))}</div><div><div class="agent-name">${esc(a.name)} <button class="quiet" data-agent-tools="${a.id}" aria-label="Tools for ${esc(a.name)}">Tools${a.tools?.length ? ` · ${a.tools.length}` : ""}</button></div><div class="agent-role">${esc(a.prompt.slice(0, 32))}…</div>${a.error ? `<div class="error-text">${esc(a.error)}</div>` : ""}</div><span class="state ${a.status}">${a.status}</span></div>`).join("") || '<p class="muted">Build a team of specialized agents.</p>'}</section><section class="section run-box"><div class="heading"><h2>Agent harness</h2><span class="eyebrow">Gemma</span></div><p class="muted">Set a shared objective. Agents choose where to talk.</p><textarea id="task" placeholder="What should the team work on?">${esc(task ?? state.run?.task ?? "")}</textarea><div class="agent-creation-settings"><label><input type="checkbox" id="allow-agent-creation" ${state.settings?.allow_agent_creation ? "checked" : ""}> Allow agents to create teammates</label><label>New agents per run <input type="number" id="max-new-agents" min="1" max="10" value="${state.settings?.max_new_agents || 3}"></label><small class="muted">Shares this run’s turn budget. New teammates inherit their creator’s tools. Private chats stay private.</small></div><div class="run-controls"><input id="turns" type="number" min="1" max="100" value="${esc(turns || 12)}" aria-label="Maximum turns"><button class="primary" id="run" ${!state.agents.length ? "disabled" : ""}>${running ? "■ Stop run" : "▶ Run team"}</button></div><p class="muted">${state.run ? `${esc(state.run.status.replaceAll("_", " "))} · ${state.run.turns}/${state.run.maxTurns} turns` : "Bounded turns · All workspace agents"}</p><p class="muted">Selective context · ${
       Object.entries(state.context_usage || {})
         .map(
           ([id, u]) =>
@@ -236,11 +268,16 @@ function render() {
         $(".messages").scrollTop = $(".messages").scrollHeight;
       }),
   );
-  for (const id of ["new-agent", "welcome-agent"])
+  for (const id of ["new-agent", "welcome-agent", "sidebar-add-agent"])
     if ($("#" + id)) $("#" + id).onclick = agentModal;
+  document
+    .querySelectorAll("[data-agent-tools]")
+    .forEach((b) => (b.onclick = () => agentToolsModal(b.dataset.agentTools)));
   $("#new-chat").onclick = () => chatModal();
-  $("#code-workspace").onclick = openCode;
+  $("#code-workspace").onclick = () => openCode();
+  hydrateChatDiffs();
   $("#search-knowledge").onclick = openKnowledge;
+  $("#manage-plugins").onclick = () => act(() => plugins.open());
   if ($("#edit-chat")) $("#edit-chat").onclick = () => chatModal(c);
   if ($("#message")) {
     $("#message").oninput = (e) => (drafts[c.id] = e.target.value);
@@ -294,20 +331,55 @@ async function act(fn) {
 }
 function modal(html, submit) {
   const d = $("#modal");
-  d.classList.remove("code-modal");
-  d.innerHTML = `<form id="modal-form">${html}<div class="actions"><button type="button" id="cancel">Cancel</button><button class="primary">Save</button></div></form>`;
+  d.classList.remove("code-modal", "plugin-modal");
+  d.innerHTML = `<form id="modal-form">${html}<p id="modal-error" class="error-text" role="alert" hidden></p><div class="actions"><button type="button" id="cancel">Cancel</button><button class="primary">Save</button></div></form>`;
   d.showModal();
   $("#cancel").onclick = () => d.close();
-  $("#modal-form").onsubmit = (e) => {
+  $("#modal-form").onsubmit = async (e) => {
     e.preventDefault();
-    act(() => submit(new FormData(e.target), d));
+    const form = e.target,
+      save = form.querySelector("button.primary"),
+      error = form.querySelector("#modal-error");
+    if (save.disabled) return;
+    save.disabled = true;
+    error.hidden = true;
+    try {
+      await submit(new FormData(form), d);
+    } catch (failure) {
+      error.textContent = failure.message;
+      error.hidden = false;
+    } finally {
+      save.disabled = false;
+    }
   };
+}
+const plugins = pluginUI({ api, modal, refresh, toast, esc });
+function agentToolFields(enabled = []) {
+  return `<h3>Tools</h3>${(state.tools || []).map((tool) => `<label class="check"><input type="checkbox" name="tools" value="${esc(tool.name)}" ${enabled.includes(tool.name) ? "checked" : ""}> ${esc(tool.label)}</label><p class="muted">${esc(tool.description)} ${esc(tool.status?.message || "")}</p>`).join("")}<p class="muted">Automatically created teammates inherit the creator’s enabled tools unless a smaller list is specified. Messaging and project tools remain available.</p>`;
+}
+function agentToolsModal(id) {
+  const agent = state.agents.find((a) => a.id === id);
+  modal(
+    `<h2>Tools for ${esc(agent.name)}</h2>${agentToolFields(agent.tools || [])}`,
+    async (form, dialog) => {
+      await api("agent-tools", {
+        agent_id: id,
+        tools: form.getAll("tools"),
+      });
+      dialog.close();
+      await refresh();
+    },
+  );
 }
 function agentModal() {
   modal(
-    '<h2>Create an agent</h2><p class="muted">A distinct role. A private identity. A place to think.</p><label>Name</label><input name="name" required maxlength="80" placeholder="e.g. Atlas"><label>System prompt</label><textarea name="prompt" rows="6" required placeholder="Define the agent’s role, goals and how it should collaborate…"></textarea>',
+    '<h2>Create an agent</h2><p class="muted">A distinct role. A private identity. A place to think.</p><label>Name</label><input name="name" required maxlength="80" placeholder="e.g. Atlas"><label>System prompt</label><textarea name="prompt" rows="6" required maxlength="20000" placeholder="Define the agent’s role, goals and how it should collaborate…"></textarea>' +
+      agentToolFields(),
     async (f, d) => {
-      const a = await api("agents", Object.fromEntries(f));
+      const a = await api("agents", {
+        ...Object.fromEntries(f),
+        tools: f.getAll("tools"),
+      });
       await refresh();
       d.innerHTML = `<h2>${esc(a.name)} is ready</h2><p class="muted">This credential lets an external agent use the messaging API. Copy it now; it is shown only once. The built-in harness needs no setup.</p><div class="secret">${esc(a.token)}</div><div class="actions"><button id="close">Done</button></div>`;
       $("#close").onclick = () => d.close();
@@ -690,7 +762,56 @@ async function saveCode() {
   await refresh();
   toast("File saved · revision " + result.revision);
 }
-function openCode() {
+const chatDiffCache = new Map();
+function hydrateChatDiffs() {
+  document.querySelectorAll(".chat-file-diff").forEach((card) => {
+    const path = card.dataset.diffPath,
+      revision = Number(card.dataset.diffRevision);
+    card.querySelector("[data-open-diff]").onclick = () =>
+      act(async () => {
+        openCode(true);
+        await loadCode(path, revision);
+        showCodeTab("changes");
+      });
+    const key = JSON.stringify([projectId, path, revision]);
+    if (!chatDiffCache.has(key)) {
+      // Bound retained promises/source previews during long monitoring sessions.
+      if (chatDiffCache.size >= 200)
+        chatDiffCache.delete(chatDiffCache.keys().next().value);
+      chatDiffCache.set(
+        key,
+        Promise.all([
+          api(
+            "file?path=" + encodeURIComponent(path) + "&revision=" + revision,
+          ),
+          revision > 1
+            ? api(
+                "file?path=" +
+                  encodeURIComponent(path) +
+                  "&revision=" +
+                  (revision - 1),
+              )
+            : Promise.resolve({ content: "" }),
+        ]).then(([after, before]) =>
+          renderDiffPreview(before.content, after.content),
+        ),
+      );
+    }
+    chatDiffCache
+      .get(key)
+      .then((html) => {
+        if (card.isConnected)
+          card.querySelector(".chat-diff-content").innerHTML = html;
+      })
+      .catch((error) => {
+        chatDiffCache.delete(key);
+        if (card.isConnected)
+          card.querySelector(".chat-diff-content").textContent =
+            "Diff unavailable: " + error.message;
+      });
+  });
+}
+function openCode(skipInitialFile = false) {
   const d = $("#modal");
   d.classList.add("code-modal");
   explorerFolder = "";
@@ -830,7 +951,7 @@ function openCode() {
       $("#sandbox-status").textContent = status.error;
   });
   const firstFile = state.coding?.files.find((f) => !f.unsupported);
-  if (firstFile) act(() => loadCode(firstFile.path));
+  if (firstFile && !skipInitialFile) act(() => loadCode(firstFile.path));
 }
 new EventSource("/api/admin/events").onmessage = () => refresh();
 refresh();

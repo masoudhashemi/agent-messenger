@@ -1,5 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, copyFileSync, readdirSync, existsSync } from "node:fs";
+import {
+  mkdirSync,
+  copyFileSync,
+  readdirSync,
+  existsSync,
+  rmSync,
+  lstatSync,
+} from "node:fs";
 import { join, resolve, isAbsolute, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Store, AppError } from "./store.js";
@@ -112,6 +119,65 @@ export class Projects {
         harness.scheduleRequests();
     }
     return this.open.get(id);
+  }
+  delete(id, { confirm_name, delete_artifacts = false } = {}) {
+    const project = this.db
+      .prepare("SELECT * FROM projects WHERE id=?")
+      .get(id);
+    if (!project) throw new AppError("Project not found", 404);
+    if (confirm_name !== project.name || typeof delete_artifacts !== "boolean")
+      throw new AppError("Type the exact project name to confirm deletion");
+    const opened = this.open.get(id);
+    if (
+      opened &&
+      (opened.harness.run?.status === "running" ||
+        (opened.harness.run?.controller && !opened.harness.run.ended_at) ||
+        opened.sandbox.busy ||
+        opened.workspace.locked)
+    )
+      throw new AppError(
+        "Stop the project and wait for its executions to finish before deleting it",
+        409,
+      );
+    const artifacts = [
+      project.workspace_path || resolve(this.directory, "workspaces", id),
+      resolve(this.directory, "git", id + ".git"),
+      resolve(this.directory, "uv-cache", id),
+    ];
+    if (delete_artifacts) {
+      // Validate every ancestor before recursively removing user-selected folders.
+      // Child symlinks are unlinked by rmSync, never followed.
+      for (const artifact of artifacts) {
+        let current = resolve(artifact);
+        while (current !== resolve(current, "..")) {
+          try {
+            if (lstatSync(current).isSymbolicLink())
+              throw new AppError(
+                "Refusing to delete artifacts through a symlink: " + current,
+              );
+          } catch (error) {
+            if (error.code !== "ENOENT") throw error;
+          }
+          current = resolve(current, "..");
+        }
+      }
+      for (const artifact of artifacts)
+        rmSync(artifact, { recursive: true, force: true });
+    }
+    if (opened) {
+      opened.harness.stop();
+      opened.store.db.close();
+      this.open.delete(id);
+    }
+    for (const suffix of [".sqlite", ".sqlite-wal", ".sqlite-shm"])
+      rmSync(join(this.directory, id + suffix), { force: true });
+    this.db.prepare("DELETE FROM projects WHERE id=?").run(id);
+    this.notify();
+    return {
+      ok: true,
+      deleted_artifacts: delete_artifacts,
+      retained_paths: delete_artifacts ? [] : artifacts,
+    };
   }
   describe(id) {
     const { project, store, harness } = this.get(id);

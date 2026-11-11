@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "name": "plugin_weather",
+  "label": "Weather forecast",
+  "description": "Get current temperature and weather conditions for a latitude and longitude. Temperatures are in Celsius. Use coordinates supplied by the user or established from evidence.",
+  "endpoint": "https://api.open-meteo.com/v1/forecast",
+  "method": "GET",
+  "parameters": {
+    "latitude": {
+      "type": "number",
+      "required": true,
+      "description": "Latitude in degrees"
+    },
+    "longitude": {
+      "type": "number",
+      "required": true,
+      "description": "Longitude in degrees"
+    }
+  },
+  "fixed": {
+    "current": "temperature_2m,weather_code"
+  },
+  "auth": {
+    "type": "none"
+  },
+  "response_path": "",
+  "enabled": true,
+  "example": {
+    "latitude": 43.65,
+    "longitude": -79.38
+  }
+}

@@ -29,6 +29,8 @@ To execute Python code, start Docker and run `docker pull python:3.12-slim`. For
 
 The home page lists projects with **Review**, **Resume**, and **New project** actions. Each project has its own agents, conversations, credentials, and saved run state. Review opens the existing history; Resume starts another bounded run with the saved objective and current agents. Running projects offer **Open live**. Interrupted runs are marked after a server restart and can be resumed.
 
+Use **Delete** on a project card to remove its agents, chats, tasks, and execution records. Confirm by typing the exact project name. Optionally select **Also delete all project files and artifacts** to remove its workspace folder (including `.venv`), Git history, and package cache. Unchecked, these remain on disk. Deletion is permanent; stop active runs and wait for executions to finish first.
+
 Every new project starts empty. Add agents by name and system prompt, enter an objective, then click **Run team**. Creating an agent does not create any conversations. Agents choose and create self, direct, and group threads as they work. The operator can send messages into any thread and monitor live agent activity. The turn budget is shared across agents; a run completes when agents finish or reaches the budget. Sending a new operator message automatically wakes the agents in that conversation, even after the previous run completed. A self-thread wakes its owner; a direct chat wakes both participants; a group wakes its members. Messages from external agents wake the other participants. Agent messages within a run bring addressed collaborators into that bounded run. New requests arriving during an active turn are retained, and requests not yet attempted at the turn limit get a fresh bounded run. Each model receives only requests from its own conversations. Stop cancels queued requests as well as the current run. Delivery status and Retry appear below operator messages; delivery means the agent received the request, not that the work is complete.
 
 The runtime has no third-party dependencies. Development browser tests use Playwright.
@@ -206,6 +208,8 @@ Each project has a shared, versioned source workspace. Open **Code workspace** a
 
 When creating a project, optionally enter an absolute **Project folder** path. Relay creates it or accepts an empty folder; existing nonempty folders are rejected. Otherwise the default is `data/projects/workspaces/<project UUID>/`. The project card and workspace show the exact path. **Open folder** opens Finder/the system file manager; **Copy path** copies its location. Project folders cannot overlap.
 
+Agent text-file edits also appear as inline diff cards in their working self chat and the active group or direct task chat. Cards show line numbers, red/green removals and additions, and a bounded preview with **Open full diff** linked to the exact saved revision. Python and uv execution changes, including file creation and deletion, use the same cards. Agent API edits use the agent's saved chat focus, falling back to a self chat. Full source patches are loaded by the monitor on demand; agents receive compact revision references in messages. Unrelated conversations receive no edit notifications.
+
 **Workspace history** shows changes across all files, Git commit IDs, authors and timestamps. Click a text-file change to review its historical source and diff, including deletions. Existing SQLite-backed projects automatically migrate their original file revisions into Git, preserving recorded authors and timestamps. Git repositories live in `data/projects/git/<project UUID>.git`; the `.git` pointer in the project folder also supports normal host commands such as `git log` and `git diff`. Back up the project folder, Git repository and project database together.
 
 The **Explorer** in Code workspace shows expandable folders, including empty folders. Select a folder to create files inside it, or use **Project root** to return to the root. **＋ Folder** creates a nested folder path; **＋ File** opens a new editor. Existing files with nested paths automatically appear in their parent folders. Agent changes appear live, and file revision history remains available.
@@ -270,3 +274,34 @@ npm run demo:render
 ```
 
 Recording uses installed Google Chrome, an isolated temporary project, and the real model endpoint. It creates one initial agent, enables teammate creation, and verifies that an agent-created specialist communicates and runs successful Docker tests. The tour reopens that same real session and records explicit tab switches with explanations of group, direct, and self-chat visibility. Rendering produces the GIF, MP4, and result summary in `docs/media/`. Raw captures stay in the temporary directory printed by the recorder; delete that directory after rendering. Rendering accepts an explicit capture directory as `npm run demo:render -- /path/to/capture`.
+
+
+### Per-agent web search
+
+Click **Tools** beside an agent, enable **Web search**, and save. The same checkbox appears when creating an agent. This permission is off by default and enforced by the server. Automatically created teammates inherit their creator’s optional tools when `tools` is omitted. An explicit `tools: []` disables optional tools for the teammate; an explicit subset narrows access. Agents cannot delegate tools they do not have. Existing teammates keep their saved permissions.
+
+Configure one provider in your local `.env`, then restart `npm start`:
+
+```dotenv
+WEB_SEARCH_PROVIDER=brave
+BRAVE_SEARCH_API_KEY=your-search-api-key
+```
+
+Alternatively use `WEB_SEARCH_PROVIDER=tavily` and `TAVILY_API_KEY`. See the [Brave API authentication guide](https://api-dashboard.search.brave.com/documentation/guides/authentication) or [Tavily Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search). These search keys are separate from the model's `TOOLKIT_TOKEN`. Keep your existing model settings; a `.env` containing only search settings does not replace the adjacent harness token fallback.
+
+Ask an enabled agent, for example: “Search the web for Python testing best practices and summarize three sources with links.” The agent can call `{"type":"web_search","query":"Python testing best practices","limit":5}`. Queries go to the selected provider. Keys stay on the server; they are not put in model context or Docker containers. Search runs through the harness and does not enable networking in Python containers.
+
+Each successful search produces a source card in the agent's self chat, with up to five clickable links and bounded snippets. Results are delivered to the agent on its next turn; it can then share a cited answer in the task chat. This tool searches snippets; it does not browse full pages. Disabled tools, missing configuration, provider errors and timeouts produce explicit action errors.
+
+
+### Adding tools
+
+For API integrations, open **Tools & plugins** inside a project. Add a public HTTPS API through the form, use the weather template, or import a JSON manifest. Install, edit, test, export and remove plugins without a server restart. Enable each installed plugin through the agent’s **Tools** button; automatic teammates inherit their creator’s enabled tools. Credentials stay server-side and are omitted from exports. See the [Tools and plugins guide](docs/tools.md) for step-by-step instructions:
+
+- [Add an API plugin](docs/tools.md#add-an-http-api-plugin) or [import/export a manifest](docs/tools.md#import-and-export).
+- [Test it](docs/tools.md#test-a-plugin), [edit settings or rotate credentials](docs/tools.md#edit-a-plugin-and-rotate-credentials), and [disable or remove it](docs/tools.md#disable-or-remove-a-plugin).
+- [Assign tools to agents](docs/tools.md#enable-tools-for-agents) and understand [teammate inheritance](docs/tools.md#automatically-created-teammates).
+- Try the [weather manifest](docs/plugins/weather.json) or [Tavily search manifest](docs/plugins/tavily-search.json).
+- Check [troubleshooting](docs/tools.md#troubleshooting) and [supported API limits](docs/tools.md#supported-apis-and-limits).
+
+Optional tools are registered in `src/tools/index.js`. Add a tool definition module and register it there; its toggle, model instructions, action name, permission checks, execution and chat logging are wired automatically. See [Adding a tool](docs/tools.md) for a complete example. Custom tools are trusted server code; only install code you trust.

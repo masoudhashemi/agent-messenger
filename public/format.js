@@ -1,3 +1,4 @@
+import { lineDiff } from "./diff.js";
 export const escapeHtml = (value) =>
   String(value ?? "").replace(
     /[&<>"']/g,
@@ -92,13 +93,110 @@ function audit(body) {
     return null;
   }
 }
+function fileNotice(body) {
+  if (!body.startsWith("File change\n")) return null;
+  try {
+    const ref = JSON.parse(body.slice(12));
+    return typeof ref.path === "string" &&
+      Number.isInteger(ref.revision) &&
+      ref.revision > 0
+      ? ref
+      : null;
+  } catch {
+    return null;
+  }
+}
+export function fileDiffCard(ref) {
+  if (
+    typeof ref.path !== "string" ||
+    !Number.isInteger(ref.revision) ||
+    ref.revision < 1
+  )
+    return "";
+  return `<section class="chat-file-diff" data-diff-path="${escapeHtml(ref.path)}" data-diff-revision="${ref.revision}"><header><strong>${escapeHtml(ref.path)}</strong><span>v${ref.revision - 1} → v${ref.revision}</span><button class="quiet" data-open-diff>Open full diff ↗</button></header><div class="chat-diff-content"><p class="muted">Loading diff…</p></div></section>`;
+}
+export function renderDiffPreview(before, after) {
+  const rows = lineDiff(before, after),
+    visible = new Set();
+  let added = 0,
+    removed = 0;
+  rows.forEach((row, i) => {
+    if (row.type === "same") return;
+    if (row.type === "added") added++;
+    else removed++;
+    for (let j = Math.max(0, i - 2); j <= Math.min(rows.length - 1, i + 2); j++)
+      visible.add(j);
+  });
+  const indices = [...visible].sort((a, b) => a - b),
+    shown = indices.slice(0, 80);
+  let last = -1;
+  const html = shown
+    .map((i) => {
+      const row = rows[i],
+        gap = i > last + 1 ? '<div class="diff-gap">…</div>' : "";
+      last = i;
+      return (
+        gap +
+        `<div class="diff-line ${row.type}"><span class="line-number">${row.oldLine ?? ""}</span><span class="line-number">${row.newLine ?? ""}</span><span class="diff-sign">${row.type === "added" ? "+" : row.type === "removed" ? "−" : " "}</span><code>${escapeHtml(row.text.slice(0, 1000).replace(/\n$/, ""))}${row.text.length > 1000 ? " … [line clipped]" : !row.text.endsWith("\n") ? '<span class="no-newline"> ↵ no trailing newline</span>' : ""}</code></div>`
+      );
+    })
+    .join("");
+  return `<div class="chat-diff-summary">+${added} / −${removed} lines</div><div class="chat-diff-lines">${html || '<p class="muted">No text changes (empty file or metadata change).</p>'}</div>${indices.length > shown.length ? '<p class="muted">Preview limited to 80 lines. Open the full diff to see all changes.</p>' : ""}`;
+}
+function webSearchNotice(body) {
+  if (!body.startsWith("Web search\n")) return null;
+  try {
+    const result = JSON.parse(body.slice(11));
+    return typeof result.query === "string" && Array.isArray(result.results)
+      ? result
+      : null;
+  } catch {
+    return null;
+  }
+}
+function renderSearch(result) {
+  return `<section class="web-search-result"><div class="entry-label">Web search · ${escapeHtml(result.provider)}</div><strong>${escapeHtml(result.query)}</strong>${
+    result.results
+      .slice(0, 5)
+      .map((r) => {
+        let url;
+        try {
+          url = new URL(r.url);
+          if (
+            !["https:", "http:"].includes(url.protocol) ||
+            url.username ||
+            url.password
+          )
+            return "";
+        } catch {
+          return "";
+        }
+        return `<article><a href="${escapeHtml(url.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.title || url.hostname)} ↗</a><small>${escapeHtml(url.hostname)}</small><p>${escapeHtml(r.snippet)}</p></article>`;
+      })
+      .join("") || '<p class="muted">No results found.</p>'
+  }<small class="muted">Search snippets · ${escapeHtml(result.searched_at || "")}</small></section>`;
+}
 export function preview(body) {
+  const search = webSearchNotice(body);
+  if (search) return "Web search · " + search.query;
+  const ref = fileNotice(body);
+  if (ref) return `File changed · ${ref.path} · v${ref.revision}`;
   const parsed = audit(body);
   if (parsed)
     return `${parsed.title} · ${parsed.items.length} action${parsed.items.length === 1 ? "" : "s"} recorded`;
   return body.replace(/^Turn \d+ · Working note\n/, "").replace(/\s+/g, " ");
 }
 export function renderMessage(body, chats = [], id = "") {
+  if (body.startsWith("Tool result\n")) {
+    try {
+      const result = JSON.parse(body.slice(12));
+      return `<div class="entry-label">Tool result · ${escapeHtml(result.tool)}</div><pre><code>${escapeHtml(JSON.stringify(result, null, 2))}</code></pre>`;
+    } catch {}
+  }
+  const search = webSearchNotice(body);
+  if (search) return renderSearch(search);
+  const ref = fileNotice(body);
+  if (ref) return fileDiffCard(ref);
   const parsed = audit(body);
   if (parsed) {
     return `<div class="entry-label">${escapeHtml(parsed.title)} · Action results</div><div class="action-list">${
@@ -131,7 +229,14 @@ export function renderMessage(body, chats = [], id = "") {
                             : r.kind === "group"
                               ? "Group ready"
                               : "Action completed";
-          return `<div class="action-item ${r.error ? "action-error" : ""}"><span class="action-check">${r.error ? "!" : "✓"}</span><div><strong>${escapeHtml(label)}</strong>${r.path ? `<span class="action-target">${escapeHtml(r.path)}${r.revision ? ` · v${r.revision}` : ""}</span>` : ""}${item.action === "run_python" ? `<div class="execution-output">${r.stdout ? `<pre><code>${escapeHtml(r.stdout)}</code></pre>` : ""}${r.stderr ? `<pre><code>${escapeHtml(r.stderr)}</code></pre>` : ""}<small>Exit ${escapeHtml(r.exit_code ?? "—")} · ${escapeHtml(r.duration_ms)} ms</small></div>` : ""}${chat || r.name ? `<span class="action-target">${escapeHtml(chat?.name || r.name)}</span>` : ""}${r.error ? `<p>${escapeHtml(r.error)}</p>` : ""}${r.body ? `<div class="action-body">${markdown(r.body)}</div>` : ""}</div></div>`;
+          return `<div class="action-item ${r.error ? "action-error" : ""}"><span class="action-check">${r.error ? "!" : "✓"}</span><div><strong>${escapeHtml(label)}</strong>${r.path ? `<span class="action-target">${escapeHtml(r.path)}${r.revision ? ` · v${r.revision}` : ""}</span>` : ""}${item.action === "run_python" ? `<div class="execution-output">${r.stdout ? `<pre><code>${escapeHtml(r.stdout)}</code></pre>` : ""}${r.stderr ? `<pre><code>${escapeHtml(r.stderr)}</code></pre>` : ""}<small>Exit ${escapeHtml(r.exit_code ?? "—")} · ${escapeHtml(r.duration_ms)} ms</small></div>` : ""}${chat || r.name ? `<span class="action-target">${escapeHtml(chat?.name || r.name)}</span>` : ""}${r.error ? `<p>${escapeHtml(r.error)}</p>` : ""}${r.body ? `<div class="action-body">${markdown(r.body)}</div>` : ""}${!r.diff_posted && !r.error && ["write_file", "edit_file", "sed"].includes(item.action) ? fileDiffCard(r) : ""}${
+            !r.diff_posted && Array.isArray(r.changes)
+              ? r.changes
+                  .flatMap((e) => e.changes || [])
+                  .map(fileDiffCard)
+                  .join("")
+              : ""
+          }</div></div>`;
         })
         .join("") || '<p class="muted">No actions · Working note saved.</p>'
     }</div><details class="raw-result" data-audit="${escapeHtml(id)}"><summary>Raw action data</summary><pre><code>${escapeHtml(parsed.raw)}</code></pre></details>`;

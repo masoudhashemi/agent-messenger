@@ -1,8 +1,15 @@
+import {
+  tools as toolRegistry,
+  toolInstructions,
+  availableTools,
+} from "./tools/index.js";
+import { WebSearch } from "./web-search.js";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Retrieval, RETRIEVAL_TOOLS } from "./retrieval.js";
 import { buildContext, DEFAULT_CONTEXT_BYTES } from "./context.js";
 import { AppError } from "./store.js";
+import { publishFileChanges } from "./file-changes.js";
 export function modelConfig() {
   const path =
     process.env.MODEL_CONFIG ||
@@ -22,21 +29,25 @@ export function modelConfig() {
   }
   let token = process.env[config.api_key_env || "TOOLKIT_TOKEN"];
   if (!token) {
-    const env = readFileSync(
-      process.env.TOKEN_ENV_FILE ||
-        (existsSync(".env")
-          ? ".env"
-          : fileURLToPath(
-              new URL(
-                "../../worldmodel-generation-harness/.env",
-                import.meta.url,
-              ),
-            )),
-      "utf8",
-    );
-    for (const line of env.split("\n")) {
-      const m = line.match(/^\s*(?:export\s+)?TOOLKIT_TOKEN\s*=\s*(.*)\s*$/);
-      if (m) token = m[1].trim().replace(/^(['"])(.*)\1$/, "$2");
+    const tokenFiles = process.env.TOKEN_ENV_FILE
+      ? [process.env.TOKEN_ENV_FILE]
+      : [
+          ".env",
+          fileURLToPath(
+            new URL(
+              "../../worldmodel-generation-harness/.env",
+              import.meta.url,
+            ),
+          ),
+        ];
+    for (const tokenFile of tokenFiles) {
+      if (!existsSync(tokenFile)) continue;
+      const env = readFileSync(tokenFile, "utf8");
+      for (const line of env.split("\n")) {
+        const m = line.match(/^\s*(?:export\s+)?TOOLKIT_TOKEN\s*=\s*(.*)\s*$/);
+        if (m) token = m[1].trim().replace(/^(['"])(.*)\1$/, "$2");
+      }
+      if (token) break;
     }
   }
   if (!token) throw new AppError("TOOLKIT_TOKEN is missing");
@@ -107,6 +118,7 @@ const TURN_SCHEMA = {
             type: "string",
             enum: [
               ...RETRIEVAL_TOOLS,
+              ...toolRegistry.keys(),
               "mark_read",
               "send",
               "direct",
@@ -136,6 +148,7 @@ const TURN_SCHEMA = {
 export class Harness {
   constructor(store, notify = () => {}, completion = null, coding = null) {
     this.store = store;
+    this.webSearch = new WebSearch();
     this.coding = coding;
     this.retrieval = new Retrieval(store, coding?.workspace || null);
     this.notify = () => {
@@ -209,7 +222,12 @@ export class Harness {
         "Agent-created teams are limited to 30 project agents",
       );
     const creator = this.store.agent(actor);
-    const child = this.store.createAgent(name, prompt);
+    const tools = this.store.validateTools(
+      action.tools === undefined ? creator.tools : action.tools,
+    );
+    if (tools.some((tool) => !creator.tools.includes(tool)))
+      throw new AppError("Cannot delegate tools you do not have", 403);
+    const child = this.store.createAgent(name, prompt, tools);
     const chat = this.store.createChat(
       `${creator.name} & ${child.name}`.slice(0, 100),
       "direct",
@@ -228,6 +246,7 @@ export class Harness {
       chat_id: chat.id,
       status: "enrolled",
       created_by: actor,
+      tools: child.tools,
     };
   }
   wake(message) {
@@ -296,6 +315,12 @@ export class Harness {
     for (const id of this.store.chat(message.chat_id).members)
       if (id !== message.sender_id && !run.ids.includes(id)) run.ids.push(id);
   }
+  responseSchema() {
+    const schema = structuredClone(TURN_SCHEMA);
+    const type = schema.properties.actions.items.properties.type;
+    type.enum = [...new Set([...type.enum, ...availableTools(this).keys()])];
+    return schema;
+  }
   async complete(messages, signal) {
     const c = modelConfig();
     const response = await fetch(
@@ -312,7 +337,7 @@ export class Harness {
           temperature: c.temperature ?? 0,
           response_format: {
             type: "json_schema",
-            json_schema: { name: "agent_turn", schema: TURN_SCHEMA },
+            json_schema: { name: "agent_turn", schema: this.responseSchema() },
           },
           max_tokens: Math.min(c.max_tokens || 2048, 4096),
         }),
@@ -438,6 +463,7 @@ export class Harness {
               agent.prompt +
               "\n\n" +
               protocol +
+              toolInstructions(agent.tools, this) +
               "\nAgent creation settings: " +
               JSON.stringify({
                 ...this.settings,
@@ -529,7 +555,46 @@ export class Harness {
               try {
                 if (RETRIEVAL_TOOLS.has(a.type))
                   results.push(this.retrieval.execute(id, a));
-                else if (a.type === "create_agent")
+                else if (availableTools(this).has(a.type)) {
+                  if (!this.store.agent(id).tools.includes(a.type))
+                    throw new AppError(
+                      "Tool is not enabled for this agent: " + a.type,
+                      403,
+                    );
+                  const definition = availableTools(this).get(a.type);
+                  const result = await definition.execute(
+                    {
+                      store: this.store,
+                      actor: id,
+                      signal: run.controller.signal,
+                      webSearch: this.webSearch,
+                      workspace: this.coding?.workspace,
+                    },
+                    a,
+                  );
+                  if (
+                    !result ||
+                    typeof result !== "object" ||
+                    Array.isArray(result) ||
+                    Buffer.byteLength(JSON.stringify(result)) > 12000
+                  )
+                    throw new AppError(
+                      "Tool must return a JSON object of at most 12,000 bytes",
+                    );
+                  if (run.status !== "running") break;
+                  const message = this.store.send(
+                    noteChat.id,
+                    id,
+                    (definition.messagePrefix || "Tool result") +
+                      "\n" +
+                      JSON.stringify(
+                        definition.messagePrefix
+                          ? result
+                          : { tool: a.type, ...result },
+                      ),
+                  );
+                  results.push({ ...result, source_message_id: message.id });
+                } else if (a.type === "create_agent")
                   results.push(this.createTeammate(id, a, run));
                 else if (a.type === "mark_read") {
                   if (
@@ -612,8 +677,9 @@ export class Harness {
                   if (
                     parsed.actions.some(
                       (action) =>
-                        RETRIEVAL_TOOLS.has(action.type) &&
-                        action.type !== "focus_chat",
+                        (RETRIEVAL_TOOLS.has(action.type) &&
+                          action.type !== "focus_chat") ||
+                        availableTools(this).has(action.type),
                     )
                   ) {
                     results.push({
@@ -645,6 +711,9 @@ export class Harness {
                       "Coding tools are unavailable in this harness",
                     );
                   const { workspace, sandbox } = this.coding;
+                  const beforeFiles = new Map(
+                    workspace.list().map((f) => [f.path, f.revision]),
+                  );
                   if (a.type.startsWith("uv_"))
                     results.push(
                       await sandbox.uv(
@@ -691,6 +760,16 @@ export class Harness {
                         run.controller.signal,
                       ),
                     );
+                  publishFileChanges(
+                    this.store,
+                    workspace,
+                    id,
+                    noteChat.id,
+                    frame.payload.context.active_chat?.id,
+                    a.type,
+                    results.at(-1),
+                    beforeFiles,
+                  );
                   this.notify();
                 } else throw new Error("Unknown action");
               } catch (e) {
@@ -700,9 +779,17 @@ export class Harness {
             const audit = JSON.stringify(
               parsed.actions.map((action, index) => ({
                 action: action.type,
-                result: results[index] || {
-                  error: "Action cancelled before execution",
-                },
+                result:
+                  availableTools(this).has(action.type) &&
+                  results[index]?.source_message_id
+                    ? {
+                        query: results[index].query,
+                        source_message_id: results[index].source_message_id,
+                        count: results[index].results?.length,
+                      }
+                    : results[index] || {
+                        error: "Action cancelled before execution",
+                      },
               })),
               null,
               2,
