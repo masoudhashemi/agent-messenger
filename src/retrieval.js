@@ -1,6 +1,14 @@
+import { textPage } from "./artifacts.js";
+import { validateAction } from "./action-validation.js";
 import { AppError } from "./store.js";
 import { lineDiff } from "../public/diff.js";
 export const RETRIEVAL_TOOLS = new Set([
+  "read_group",
+  "list_sources",
+  "read_source",
+  "read_artifact",
+  "search_artifact",
+  "read_chat_details",
   "ls",
   "grep",
   "list_chats",
@@ -125,7 +133,22 @@ export class Retrieval {
         membersByChat.get(m.chat_id)?.push(m.agent_id);
     }
     const chats = rows.map((c) => ({
-      ...c,
+      ...(bytes(c) > 4000
+        ? {
+            id: c.id,
+            kind: c.kind,
+            last_message_id: c.last_message_id,
+            metadata_loaded: false,
+            read_with: { type: "read_chat_details", chat_id: c.id },
+          }
+        : c),
+      ...(c.kind === "group"
+        ? {
+            group_status: this.store.groups.info(c.id).status,
+            group_owner: this.store.groups.info(c.id).owner_id,
+            read_group_with: { type: "read_group", chat_id: c.id },
+          }
+        : {}),
       members: membersByChat.get(c.id) || [],
       ...this.store.readState(c.id, actor),
     }));
@@ -144,11 +167,20 @@ export class Retrieval {
     const messages = [];
     for (const row of rows.slice(0, limit)) {
       const entry = {
-        ...row,
-        body: row.body,
-        body_truncated: false,
+        id: row.id,
+        chat_id: row.chat_id,
+        sender_id: row.sender_id,
+        created_at: row.created_at,
+        ...(bytes(row) > 6000
+          ? {
+              body_loaded: false,
+              body_truncated: true,
+              total_characters: row.body.length,
+              read_with: { type: "read_message", message_id: row.id },
+            }
+          : { body: row.body, body_truncated: false }),
       };
-      if (messages.length && bytes([...messages, entry]) > 32000) break;
+      if (messages.length && bytes([...messages, entry]) > 7000) break;
       messages.push(entry);
     }
     return {
@@ -166,14 +198,16 @@ export class Retrieval {
     if (!m) throw new AppError("Message unavailable", 403);
     this.scope(actor, m.chat_id);
     const offset = integer(a.offset, 0, 0, m.body.length),
-      limit = integer(a.limit, 64000, 1, 64000);
+      limit = integer(a.limit, 4000, 1, 64000);
+    const part = textPage(m.body, offset, limit);
     return {
       ...m,
-      body: m.body.slice(offset, offset + limit),
+      body: part.text,
       offset,
       total_characters: m.body.length,
-      next_offset: offset + limit < m.body.length ? offset + limit : null,
-      body_truncated: offset !== 0 || offset + limit < m.body.length,
+      next_offset: part.next_offset,
+      body_truncated: !part.complete,
+      complete: part.complete,
     };
   }
   searchMessages(actor, a) {
@@ -286,30 +320,67 @@ export class Retrieval {
   executions(a, search = false) {
     const offset = integer(a.offset, 0, 0, 1000000),
       limit = integer(a.limit, 10, 1, 30);
-    const rows = search
-      ? this.store.all(
-          "SELECT e.record FROM executions e JOIN execution_search ON execution_search.rowid=e.rowid WHERE execution_search MATCH ? ORDER BY e.rowid DESC LIMIT ? OFFSET ?",
-          query(a.query),
-          limit + 1,
-          offset,
-        )
-      : this.store.all(
-          "SELECT record FROM executions ORDER BY rowid DESC LIMIT ? OFFSET ?",
-          limit + 1,
-          offset,
-        );
+    const terms = search
+      ? (query(a.query),
+        String(a.query)
+          .toLowerCase()
+          .match(/[\p{L}\p{N}]+/gu) || [])
+      : [];
+    const scan = (record) => {
+      const found = new Set(
+        terms.filter((t) => JSON.stringify(record).toLowerCase().includes(t)),
+      );
+      let preview = null;
+      for (const stream of ["stdout", "stderr"]) {
+        const chunks = record[stream + "_artifact_id"]
+          ? this.store.artifacts.chunks(record[stream + "_artifact_id"])
+          : [record[stream] || ""];
+        let tail = "",
+          position = 0;
+        for (const chunk of chunks) {
+          const text = tail + chunk,
+            lower = text.toLowerCase();
+          const matches = terms.filter((t) => lower.includes(t));
+          for (const term of matches) found.add(term);
+          if (!preview && matches.length) {
+            const part = excerpt(text, a.query);
+            preview = {
+              ...part,
+              offset: position - tail.length + part.offset,
+              stream,
+            };
+          }
+          position += chunk.length;
+          tail = text.slice(-Math.max(80, ...terms.map((t) => t.length)));
+        }
+      }
+      return {
+        matches: terms.every((t) => found.has(t)),
+        preview: preview || { snippet: "", offset: 0, stream: "stderr" },
+      };
+    };
+    let rows;
+    if (search) {
+      rows = [];
+      let skipped = 0;
+      for (const row of this.store.db
+        .prepare("SELECT record FROM executions ORDER BY rowid DESC")
+        .iterate()) {
+        const match = scan(JSON.parse(row.record));
+        if (!match.matches) continue;
+        if (skipped++ < offset) continue;
+        rows.push({ ...row, preview: match.preview });
+        if (rows.length >= limit + 1) break;
+      }
+    } else
+      rows = this.store.all(
+        "SELECT record FROM executions ORDER BY rowid DESC LIMIT ? OFFSET ?",
+        limit + 1,
+        offset,
+      );
     return page(
       rows.map((r) => {
-        const { stdout, stderr, ...record } = JSON.parse(r.record);
-        const terms =
-          String(a.query || "")
-            .toLowerCase()
-            .match(/[\p{L}\p{N}]+/gu) || [];
-        const stream = terms.some((t) =>
-          (stdout || "").toLowerCase().includes(t),
-        )
-          ? "stdout"
-          : "stderr";
+        let { stdout, stderr, ...record } = JSON.parse(r.record);
         return {
           id: record.id,
           path: record.path,
@@ -319,16 +390,13 @@ export class Retrieval {
           ended_at: record.ended_at,
           exit_code: record.exit_code,
           duration_ms: record.duration_ms,
-          error: record.error?.slice(0, 500),
-          ...(search
-            ? {
-                ...excerpt(
-                  (stream === "stdout" ? stdout : stderr) || "",
-                  a.query,
-                ),
-                stream,
-              }
+          ...(record.error
+            ? bytes(record.error) <= 4000
+              ? { error: record.error }
+              : { error_loaded: false }
             : {}),
+          ...(search ? r.preview : {}),
+          read_with: { type: "read_execution", execution_id: record.id },
         };
       }),
       offset,
@@ -336,10 +404,30 @@ export class Retrieval {
     );
   }
   execute(actor, a) {
+    validateAction(a);
     this.workspace?.sync();
     this.scope(actor);
     if (!RETRIEVAL_TOOLS.has(a.type))
       throw new AppError("Unknown retrieval tool");
+    if (a.type === "read_group") {
+      this.store.groups.scope(a.chat_id, actor);
+      return {
+        ...this.store.chat(a.chat_id),
+        ...(a.view === "history"
+          ? { history: this.store.groups.history(a.chat_id, actor, a) }
+          : { decisions: this.store.groups.decisions(a.chat_id, actor, a) }),
+      };
+    }
+    if (a.type === "list_sources") return this.store.sources.list(actor, a);
+    if (a.type === "read_source") return this.store.sources.read(actor, a);
+    if (a.type === "read_artifact")
+      return this.store.artifacts.read(a.artifact_id, actor, a);
+    if (a.type === "search_artifact")
+      return this.store.artifacts.search(a.artifact_id, actor, a);
+    if (a.type === "read_chat_details") {
+      this.scope(actor, a.chat_id);
+      return this.store.chat(a.chat_id);
+    }
     if (a.type === "list_chats") return this.chatList(actor, a);
     if (a.type === "list_agents") {
       const offset = integer(a.offset, 0, 0, 1000000),
@@ -412,18 +500,48 @@ export class Retrieval {
             : "";
       const offset = integer(a.offset, 0, 0, 1000000),
         limit = integer(a.limit, 40, 1, 80);
-      const rows = lineDiff(before, file.content).map((r) => ({
-        ...r,
-        text: r.text.slice(0, 1000),
-        text_truncated: r.text.length > 1000,
-      }));
+      const rows = lineDiff(before, file.content),
+        results = [];
+      let rowOffset = offset,
+        column = integer(a.text_offset, 0, 0, Number.MAX_SAFE_INTEGER);
+      while (rowOffset < rows.length && results.length < limit) {
+        const row = rows[rowOffset];
+        const part = textPage(row.text, column, 4000);
+        const entry = {
+          ...row,
+          text: part.text,
+          text_offset: column,
+          text_complete: part.complete,
+        };
+        if (results.length && bytes([...results, entry]) > 7000) break;
+        results.push(entry);
+        if (part.next_offset !== null) {
+          column = part.next_offset;
+          break;
+        }
+        rowOffset++;
+        column = 0;
+      }
+      const next =
+        rowOffset < rows.length
+          ? {
+              type: "read_file_diff",
+              path: file.path,
+              revision: file.revision,
+              offset: rowOffset,
+              text_offset: column,
+            }
+          : null;
       return {
         path: file.path,
         revision: file.revision,
         previous_revision: file.revision - 1,
-        ...page(rows.slice(offset, offset + limit + 1), offset, limit),
+        results,
+        next,
+        next_offset: next?.offset ?? null,
       };
     }
+
     if (a.type === "list_executions" || a.type === "search_executions")
       return this.executions(a, a.type === "search_executions");
     if (a.type === "read_execution") {
@@ -436,6 +554,11 @@ export class Retrieval {
         stream = a.stream ?? "stdout";
       if (!["stdout", "stderr"].includes(stream))
         throw new AppError("stream must be stdout or stderr");
+      const artifact_id = record[stream + "_artifact_id"];
+      if (artifact_id) {
+        const part = this.store.artifacts.read(artifact_id, actor, a);
+        return { ...record, ...part, stream, output: part.text };
+      }
       const output = stream === "stdout" ? stdout || "" : stderr || "",
         offset = integer(a.offset, 0, 0, output.length),
         limit = integer(a.limit, 6000, 1, 8000);

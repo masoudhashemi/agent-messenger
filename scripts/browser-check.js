@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import { Store } from "../src/store.js";
 import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -37,6 +39,20 @@ if (!ready) {
   server.kill();
   throw Error("Test server did not start");
 }
+const mockModel = createServer(async (req, res) => {
+  let body = "";
+  for await (const chunk of req) body += chunk;
+  const request = JSON.parse(body);
+  assert.equal(req.headers.authorization, "Bearer browser-secret-key");
+  assert.equal(request.model, "provider/exact-model");
+  res.setHeader("Content-Type", "application/json");
+  res.end(
+    JSON.stringify({
+      choices: [{ finish_reason: "stop", message: { content: '{"ok":true}' } }],
+    }),
+  );
+});
+await new Promise((resolve) => mockModel.listen(0, "127.0.0.1", resolve));
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 try {
   const page = await browser.newPage({
@@ -54,6 +70,57 @@ try {
   await page.locator("#welcome-agent").waitFor();
   assert.equal(await page.locator(".chat-row").count(), 0);
   assert.equal(await page.locator("#demo").count(), 0);
+  await page.locator("#manage-models").click();
+  await page.locator("#add-model").click();
+  await page.locator("[name=label]").fill("Browser model");
+  await page
+    .locator("[name=api_base]")
+    .fill(`http://127.0.0.1:${mockModel.address().port}/v1`);
+  await page.locator("[name=name]").fill("provider/exact-model");
+  await page.locator("[name=credential]").fill("browser-secret-key");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page
+    .locator("[name=model_id] option")
+    .filter({ hasText: "Browser model" })
+    .waitFor({ state: "attached" });
+  const modelId = await page
+    .locator("[name=model_id] option")
+    .filter({ hasText: "Browser model" })
+    .getAttribute("value");
+  await page.locator("[name=model_id]").selectOption(modelId);
+  await page.locator("#test-model").click();
+  await page
+    .locator("#model-test-result")
+    .filter({ hasText: "valid JSON response" })
+    .waitFor();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page
+    .locator("#manage-models")
+    .filter({ hasText: "Browser model" })
+    .waitFor();
+  const catalogText = await page.evaluate(async () =>
+    (await fetch("/api/admin/models")).text(),
+  );
+  assert.ok(!catalogText.includes("browser-secret-key"));
+  await page.locator("#manage-models").click();
+  await page.locator("#edit-model").click();
+  assert.equal(await page.locator("[name=credential]").inputValue(), "");
+  await page.locator("[name=label]").fill("Edited browser model");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.locator("[name=model_id]").selectOption("");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  for (const width of [980, 600]) {
+    await page.setViewportSize({ width, height: 850 });
+    const bounds = await page.locator("#manage-models").boundingBox();
+    assert.ok(
+      bounds && bounds.y >= 0 && bounds.y + bounds.height < 850,
+      "Model selector must be visible without scrolling",
+    );
+    await page.locator("#manage-models").click();
+    await page.locator("[name=model_id]").waitFor({ state: "visible" });
+    await page.locator("#cancel").click();
+  }
+  await page.setViewportSize({ width: 1440, height: 980 });
   await page.locator("#sidebar-add-agent").click();
   await page.route(
     "**/api/admin/agents?*",
@@ -240,6 +307,34 @@ try {
   await page.locator("#plugins-close").click();
 
   assert.equal(await page.locator("#allow-agent-creation").isChecked(), false);
+  // A live refresh must preserve control focus without attempting text selection
+  // on checkboxes or number inputs, and preserve actual textarea selections.
+  for (const id of ["allow-agent-creation", "turns", "task"]) {
+    const restored = await page.evaluate((id) => {
+      const before = document.getElementById(id);
+      before.focus();
+      if (id === "task") before.setSelectionRange(2, 7, "backward");
+      document
+        .querySelector("#search")
+        .dispatchEvent(new Event("input", { bubbles: true }));
+      const after = document.getElementById(id);
+      return {
+        replaced: before !== after,
+        focused: document.activeElement.id,
+        start: after.selectionStart,
+        end: after.selectionEnd,
+        direction: after.selectionDirection,
+      };
+    }, id);
+    assert.equal(restored.replaced, true);
+    assert.equal(restored.focused, id);
+    if (id === "task") {
+      assert.equal(restored.start, 2);
+      assert.equal(restored.end, 7);
+      assert.equal(restored.direction, "backward");
+    }
+  }
+
   await page.locator("#allow-agent-creation").check();
   await page.waitForFunction(
     () => document.querySelector("#allow-agent-creation")?.checked,
@@ -249,6 +344,99 @@ try {
   await page.waitForFunction(async () => {
     const s = await (await fetch("/api/admin/state" + location.search)).json();
     return s.settings?.allow_agent_creation && s.settings.max_new_agents === 2;
+  });
+  await page
+    .locator("#message")
+    .fill("Unsent draft preserved during live updates.");
+  for (const id of ["allow-agent-creation", "turns", "task", "message"]) {
+    const before = await page.evaluate(async (id) => {
+      const control = document.getElementById(id);
+      control.focus();
+      if (typeof control.selectionStart === "number")
+        control.setSelectionRange(2, 7, "backward");
+      window.regressionPreviousControl = control;
+      const value = control.value;
+      const response = await fetch("/api/admin/settings" + location.search, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          allow_agent_creation: document.querySelector("#allow-agent-creation")
+            .checked,
+          max_new_agents: Number(
+            document.querySelector("#max-new-agents").value,
+          ),
+        }),
+      });
+      if (!response.ok) throw new Error("Could not trigger live update");
+      return value;
+    }, id);
+    await page.waitForFunction(
+      () => !window.regressionPreviousControl.isConnected,
+    );
+    const after = await page.evaluate((id) => {
+      const control = document.getElementById(id);
+      return {
+        focused: document.activeElement.id,
+        value: control.value,
+        start: control.selectionStart,
+        end: control.selectionEnd,
+        direction: control.selectionDirection,
+      };
+    }, id);
+    assert.equal(after.focused, id);
+    assert.equal(after.value, before);
+    if (id === "task" || id === "message") {
+      assert.equal(after.start, 2);
+      assert.equal(after.end, 7);
+      assert.equal(after.direction, "backward");
+    }
+  }
+  assert.equal(
+    await page.locator("#message").inputValue(),
+    "Unsent draft preserved during live updates.",
+  );
+  await page.locator("#message").fill("");
+  const numericDraft = await page.evaluate(() => {
+    const control = document.querySelector("#max-new-agents");
+    control.focus();
+    control.value = "4";
+    document
+      .querySelector("#search")
+      .dispatchEvent(new Event("input", { bubbles: true }));
+    return document.querySelector("#max-new-agents").value;
+  });
+  assert.equal(
+    numericDraft,
+    "4",
+    "Rendering must preserve the focused numeric draft",
+  );
+  await page.locator("#max-new-agents").fill("2");
+  for (const [id, draft, restored] of [
+    ["max-new-agents", "4", "2"],
+    ["turns", "", "12"],
+  ]) {
+    await page.locator("#" + id).fill(draft);
+    await page.evaluate(async (id) => {
+      window.regressionPreviousControl = document.getElementById(id);
+      const response = await fetch("/api/admin/settings" + location.search, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allow_agent_creation: true, max_new_agents: 2 }),
+      });
+      if (!response.ok) throw new Error("Could not trigger live update");
+    }, id);
+    await page.waitForFunction(
+      () => !window.regressionPreviousControl.isConnected,
+    );
+    assert.equal(
+      await page.locator("#" + id).inputValue(),
+      draft,
+      "Live updates must preserve an unsubmitted numeric draft",
+    );
+    await page.locator("#" + id).fill(restored);
+  }
+  await page.evaluate(() => {
+    delete window.regressionPreviousControl;
   });
   await page.reload();
   await page.locator("#allow-agent-creation").waitFor();
@@ -581,6 +769,194 @@ try {
     await page.locator(".chat-row .chat-owner").first().textContent(),
     "Lead",
   );
+  const artifactStore = new Store(
+    join(
+      testDirectory,
+      "projects",
+      new URL(page.url()).searchParams.get("project") + ".sqlite",
+    ),
+  );
+  const artifactChat = artifactStore
+    .chats()
+    .find((c) => c.name === "Research notes");
+  const artifactText = "😀 full output\n".repeat(4000) + "UNIQUE_END_MARKER";
+  const artifactId = artifactStore.artifacts.save(artifactText, {
+    chat_id: artifactChat.id,
+    owner: artifactChat.members[0],
+    label: "Browser output",
+  });
+  artifactStore.send(
+    artifactChat.id,
+    artifactChat.members[0],
+    "Tool result\n" +
+      JSON.stringify({
+        tool: "fixture",
+        artifact_id: artifactId,
+        content_loaded: false,
+      }),
+  );
+  artifactStore.db.close();
+  let activityPhase = "preparing";
+  const activityRoute = async (route) => {
+    const response = await route.fetch();
+    const snapshot = await response.json();
+    snapshot.run = {
+      id: "activity-fixture",
+      status: activityPhase === "done" ? "completed" : "running",
+      task: "Activity display test",
+      turns: 1,
+      maxTurns: 3,
+    };
+    snapshot.activity = {
+      [artifactChat.members[0]]: {
+        agent_id: artifactChat.members[0],
+        run_id: "activity-fixture",
+        chat_id: artifactChat.id,
+        phase: activityPhase,
+        tool: activityPhase === "working" ? "web_search" : null,
+      },
+    };
+    await route.fulfill({ response, json: snapshot });
+  };
+  await page.route("**/api/admin/state?*", activityRoute);
+  await page.reload();
+  await page.locator(`[data-chat="${artifactChat.id}"].chat-active`).waitFor();
+  await page.locator(`[data-activity-chat="${artifactChat.id}"]`).click();
+  await page
+    .locator('.messages [role="status"]')
+    .filter({ hasText: "Waiting for model" })
+    .waitFor();
+  activityPhase = "working";
+  await page.reload();
+  await page
+    .locator(".chat-active .chat-activity")
+    .filter({ hasText: "Working · web search" })
+    .waitFor();
+  activityPhase = "done";
+  await page.reload();
+  await page.locator(".chat-row").first().waitFor();
+  assert.equal(await page.locator(".chat-active").count(), 0);
+  assert.equal(await page.locator(".typing-dots").count(), 0);
+  await page.unroute("**/api/admin/state?*", activityRoute);
+  await page.reload();
+  await page.locator(`[data-artifact="${artifactId}"]`).click();
+  await page
+    .locator("#output-text")
+    .filter({ hasText: "full output" })
+    .waitFor();
+  await page.locator("#output-next").click();
+  await page.waitForFunction(
+    () => !document.querySelector("#output-prev").disabled,
+  );
+  await page.locator("#output-search [name=query]").fill("UNIQUE_END_MARKER");
+  await page.locator("#output-search button").click();
+  await page.locator("[data-output-offset]").first().click();
+  await page
+    .locator("#output-text")
+    .filter({ hasText: "UNIQUE_END_MARKER" })
+    .waitFor();
+  const artifactDownload = page.waitForEvent("download");
+  await page.locator("#output-download").click();
+  let artifactDownloaded = "";
+  const artifactChunks = [];
+  for await (const chunk of await (await artifactDownload).createReadStream())
+    artifactChunks.push(chunk);
+  artifactDownloaded = Buffer.concat(artifactChunks).toString("utf8");
+  assert.equal(artifactDownloaded, artifactText);
+  await page.locator("#close-output").click();
+  await page.locator("#new-chat").click();
+  await page.locator('[name="name"]').fill("Evidence review");
+  await page.locator('[name="summary"]').fill("Choose a supported conclusion");
+  await page.locator('[name="kind"]').selectOption("group");
+  await page.locator('[name="members"]').first().check();
+  await page.locator('[name="members"]').nth(1).check();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.locator("#manage-group").click();
+  await page
+    .locator('[name="completion_criteria"]')
+    .fill("Publish the supported conclusion with evidence");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.locator("#group-decisions").click();
+  await page.locator('[name="title"]').fill("Use the documented evidence");
+  await page
+    .locator('[name="rationale"]')
+    .fill("The cited source supports this test conclusion.");
+  await page.locator('[name="evidence"]').fill("https://example.com/evidence");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.locator("#group-decisions").click();
+  await page.locator('[data-status="accepted"]').click();
+  await page
+    .locator(".decision-item")
+    .filter({ hasText: "accepted" })
+    .waitFor();
+  await page.locator("#cancel").click();
+  const groupProjectId = new URL(page.url()).searchParams.get("project");
+  const groupState = await (
+    await page.request.get(
+      `http://localhost:${port}/api/admin/state?project=${groupProjectId}`,
+    )
+  ).json();
+  const reviewGroup = groupState.chats.find(
+    (c) => c.name === "Evidence review",
+  );
+  const reportResponse = await page.request.post(
+    `http://localhost:${port}/api/admin/messages?project=${groupProjectId}`,
+    {
+      data: {
+        chat_id: reviewGroup.id,
+        body: "Final supported test conclusion: https://example.com/evidence",
+      },
+    },
+  );
+  const groupReport = await reportResponse.json();
+  await page.locator("#manage-group").click();
+  await page.locator('[name="status"]').selectOption("resolved");
+  await page.locator('[name="final_message_id"]').fill(String(groupReport.id));
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page
+    .locator(".group-contract")
+    .filter({ hasText: "resolved" })
+    .waitFor();
+  await page.locator("#group-final").click();
+  await page
+    .locator("#modal")
+    .filter({ hasText: "Final supported test conclusion" })
+    .waitFor();
+  await page.locator("#cancel").click();
+  await page.locator("#group-history").click();
+  await page.locator("#modal details").first().waitFor();
+  await page.locator("#cancel").click();
+  for (const mode of ["setup", "full"]) {
+    await page.goto(`http://localhost:${port}`);
+    await page
+      .locator(".project-card")
+      .filter({ hasText: "Browser test project" })
+      .locator("[data-duplicate-project]")
+      .click();
+    assert.equal(await page.locator('[name="mode"] option').count(), 2);
+    await page.locator('[name="name"]').fill(`${mode} duplicate`);
+    await page.locator('[name="mode"]').selectOption(mode);
+    await page
+      .getByRole("button", { name: "Duplicate project", exact: true })
+      .click();
+    await page.waitForURL(/\?project=/);
+    const copiedId = new URL(page.url()).searchParams.get("project");
+    const copied = await (
+      await page.request.get(
+        `http://localhost:${port}/api/admin/state?project=${copiedId}`,
+      )
+    ).json();
+    assert.ok(copied.agents.every((a) => a.status === "idle"));
+    assert.ok(!copied.requests.some((r) => r.status === "queued"));
+    if (mode === "setup") assert.equal(copied.chats.length, 0);
+    else {
+      assert.ok(copied.chats.some((c) => c.name === "Research notes"));
+      const output = await page.request.get(
+        `http://localhost:${port}/api/admin/artifact?project=${copiedId}&id=${artifactId}&download=1`,
+      );
+      assert.equal(await output.text(), artifactText);
+    }
+  }
   await page.goto(`http://localhost:${port}`);
   const projectCard = page
     .locator(".project-card")
@@ -617,6 +993,7 @@ try {
   console.log("Browser checks passed:", result);
 } finally {
   await browser.close();
+  await new Promise((resolve) => mockModel.close(resolve));
   const exited = once(server, "exit");
   server.kill();
   await exited;

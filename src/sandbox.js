@@ -1,3 +1,4 @@
+import { ExecutionOutput } from "./execution-output.js";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import {
@@ -300,16 +301,24 @@ export class PythonSandbox {
         const child = spawn("docker", ["start", "--attach", container], {
           stdio: ["ignore", "pipe", "pipe"],
         });
-        let stdout = "",
-          stderr = "",
-          truncated = false;
-        const append = (target, data) => {
-          const text = data.toString();
-          if (Buffer.byteLength(target + text) > 32000) truncated = true;
-          return (target + text).slice(0, 32000);
+        const output = new ExecutionOutput(
+          this.workspace.store.artifacts,
+          record.id,
+        );
+        record.stdout_artifact_id = output.ids.stdout;
+        record.stderr_artifact_id = output.ids.stderr;
+        record.output_complete = false;
+        let captureError = null;
+        const capture = (stream, data) => {
+          try {
+            output.append(stream, data);
+          } catch (error) {
+            captureError = error;
+            stop("capture_failed");
+          }
         };
-        child.stdout.on("data", (data) => (stdout = append(stdout, data)));
-        child.stderr.on("data", (data) => (stderr = append(stderr, data)));
+        child.stdout.on("data", (data) => capture("stdout", data));
+        child.stderr.on("data", (data) => capture("stderr", data));
         const timer = setTimeout(
           () => stop("timed_out"),
           timeout_seconds * 1000,
@@ -330,17 +339,27 @@ export class PythonSandbox {
           signal?.removeEventListener("abort", abort);
         };
         child.once("error", (e) => {
+          captureError = e;
+          stop("capture_failed");
           clean();
-          reject(e);
+          // close still finalizes any captured output.
         });
         child.once("close", (code) => {
           clean();
-          resolve({
-            stdout,
-            stderr,
-            exit_code: code,
-            output_truncated: truncated,
-          });
+          try {
+            resolve({
+              ...output.finish(),
+              exit_code: code,
+              ...(captureError
+                ? {
+                    output_complete: false,
+                    error: "Failed to persist execution output",
+                  }
+                : {}),
+            });
+          } catch (error) {
+            reject(error);
+          }
         });
       });
       Object.assign(record, result, {
@@ -352,7 +371,7 @@ export class PythonSandbox {
             ? "Python execution exceeded its time limit"
             : record.status === "cancelled"
               ? "Python execution was cancelled"
-              : `Python exited with code ${record.exit_code}`;
+              : record.error || `Python exited with code ${record.exit_code}`;
     } catch (e) {
       record.status = signal?.aborted ? "cancelled" : "failed";
       record.error =

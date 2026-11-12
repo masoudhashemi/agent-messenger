@@ -772,6 +772,8 @@ dialog .actions {
 }
 .project-card-footer {
   display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   align-items: center;
   justify-content: space-between;
   margin-top: auto;
@@ -1573,9 +1575,117 @@ dialog.plugin-modal {
   max-height: 300px;
   overflow: auto;
 }
+.chat-row.chat-active {
+  box-shadow: inset 3px 0 #258759;
+  background: #edf8f0;
+}
+.group-contract {
+  padding: 16px;
+  margin-bottom: 16px;
+  background: #f4f7f0;
+  border: 1px solid #d9e1df;
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+}
+.group-contract .actions {
+  flex-wrap: wrap;
+}
+.group-contract p {
+  white-space: pre-wrap;
+}
+.decision-item {
+  padding: 12px 0;
+  border-bottom: 1px solid #d9e1df;
+  overflow-wrap: anywhere;
+}
+.decision-item p {
+  white-space: pre-wrap;
+}
+.chat-row.chat-active.selected {
+  background: #dfeee4;
+}
+.chat-activity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #266143;
+  font-size: 13px;
+  padding: 12px 16px;
+  margin: 12px 0;
+  border-radius: 12px;
+  background: #edf8f0;
+}
+.chat-activity.compact {
+  padding: 3px 0;
+  margin: 0;
+  background: none;
+  font-size: 11px;
+}
+.typing-dots {
+  display: inline-flex;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.typing-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: activity-pulse 1.2s infinite;
+}
+.typing-dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.typing-dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+.agent-chat-activity {
+  display: block;
+  color: #266143;
+  font-size: 11px;
+  text-align: left;
+  white-space: normal;
+  margin-top: 5px;
+}
+@keyframes activity-pulse {
+  0%,
+  70%,
+  100% {
+    opacity: 0.35;
+  }
+  35% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typing-dots i {
+    animation: none;
+    opacity: 1;
+  }
+}
 @media (max-width: 650px) {
   .plugin-grid {
     grid-template-columns: 1fr;
     gap: 12px;
   }
+}
+
+.sidebar-top .model-shortcut {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid #b8cdbd;
+  border-radius: 10px;
+  background: #edf4ee;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.model-shortcut span {
+  font-size: 12px;
+  color: #52775e;
 }

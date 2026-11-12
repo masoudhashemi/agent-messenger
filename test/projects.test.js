@@ -7,10 +7,212 @@ import {
   mkdirSync,
   writeFileSync,
   symlinkSync,
+  readFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Projects } from "../src/projects.js";
+import { weatherPlugin } from "../public/plugins.js";
+
+test("setup duplication copies agent and tool configuration into an empty independent project", () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-copy-setup-"));
+  const projects = new Projects(dir);
+  try {
+    const original = projects.create("Source", "Objective");
+    const source = projects.get(original.id);
+    source.store.savePlugin(
+      { ...weatherPlugin, auth: { type: "bearer" } },
+      "fixture-secret",
+    );
+    const a = source.store.createAgent("Researcher", "Search carefully", [
+      weatherPlugin.name,
+    ]);
+    source.harness.configure({ allow_agent_creation: true, max_new_agents: 5 });
+    const connection = projects.models.save({
+      label: "Shared connection",
+      name: "model",
+      api_base: "https://example.com/v1",
+      api_key_env: "",
+    });
+    source.harness.selectModel(connection.id);
+    source.workspace.configureEnvironment({
+      use_uv: true,
+      allow_package_install: true,
+    });
+    const chat = source.store.createChat("Notes", "self", [a.id]);
+    source.store.send(chat.id, a.id, "Do not copy in setup mode");
+    source.workspace.write("source.txt", "Source file", 0, a.id);
+    const copy = projects.duplicate(original.id, {
+      name: "Setup copy",
+      mode: "setup",
+    });
+    const target = projects.get(copy.id);
+    assert.equal(copy.summary, original.summary);
+    assert.equal(copy.agents, 2);
+    assert.equal(copy.chats, 0);
+    assert.equal(copy.messages, 0);
+    assert.equal(copy.run, null);
+    assert.equal(target.workspace.list().length, 0);
+    assert.equal(target.workspace.history().length, 0);
+    assert.equal(target.harness.settings.max_new_agents, 5);
+    assert.equal(target.harness.modelId, connection.id);
+    assert.equal(target.harness.selectedModel().name, "model");
+    assert.deepEqual(
+      target.workspace.environment(),
+      source.workspace.environment(),
+    );
+    const copiedAgent = target.store
+      .agents()
+      .find((agent) => agent.name === a.name);
+    assert.notEqual(copiedAgent.id, a.id);
+    assert.equal(copiedAgent.prompt, a.prompt);
+    assert.deepEqual(copiedAgent.tools, a.tools);
+    assert.equal(target.store.authenticate(a.token), undefined);
+    assert.equal(
+      target.store.get("SELECT credential FROM plugins").credential,
+      "fixture-secret",
+    );
+    target.store.removePlugin(weatherPlugin.name);
+    assert.equal(source.store.plugins().length, 1);
+    assert.ok(existsSync(join(original.workspace_path, "source.txt")));
+    assert.deepEqual(target.harness.requests, []);
+  } finally {
+    projects.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("full duplication preserves WAL content, artifacts, Git history and files without sharing storage or tokens", () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-copy-full-"));
+  let projects = new Projects(dir);
+  try {
+    const original = projects.create("Source");
+    const source = projects.get(original.id);
+    const a = source.store.createAgent("Writer", "Write");
+    const chat = source.store.createChat("Notes", "self", [a.id]);
+    const message = source.store.send(chat.id, a.id, "Original evidence");
+    const artifact = source.store.artifacts.save(
+      "complete 😀 output".repeat(10000),
+      { owner: a.id, chat_id: chat.id },
+    );
+    source.workspace.write("nested/a.txt", "one", 0, a.id);
+    source.workspace.write("nested/a.txt", "two", 1, a.id);
+    source.workspace.mkdir("empty");
+    mkdirSync(join(original.workspace_path, ".venv"));
+    writeFileSync(
+      join(original.workspace_path, ".venv", "marker"),
+      "environment",
+    );
+    writeFileSync(
+      join(original.workspace_path, "binary.bin"),
+      Buffer.from([0, 255, 1]),
+    );
+    source.harness.run = {
+      id: "saved-run",
+      status: "completed",
+      task: "Write",
+      ids: [a.id],
+      turns: 2,
+      maxTurns: 4,
+    };
+    source.harness.requests = [
+      { id: "old-request", status: "delivered", remaining: [] },
+    ];
+    source.harness.notify();
+    const copy = projects.duplicate(original.id, {
+      name: "Full copy",
+      mode: "full",
+    });
+    const target = projects.get(copy.id);
+    assert.equal(target.store.messages(chat.id)[0].id, message.id);
+    assert.equal(target.store.messages(chat.id)[0].body, "Original evidence");
+    assert.equal(
+      [...target.store.artifacts.chunks(artifact, a.id)].join(""),
+      "complete 😀 output".repeat(10000),
+    );
+    assert.equal(target.store.authenticate(a.token), undefined);
+    assert.equal(source.store.authenticate(a.token), a.id);
+    assert.ok(target.store.agents().every((agent) => agent.status === "idle"));
+    assert.equal(target.harness.run.status, "stopped");
+    assert.equal(target.harness.run.task, "Write");
+    assert.ok(!target.harness.requests.some((r) => r.status === "queued"));
+    assert.equal(target.workspace.read("nested/a.txt", 1).content, "one");
+    assert.equal(
+      target.workspace.folder.git(["rev-parse", "HEAD"]),
+      source.workspace.folder.git(["rev-parse", "HEAD"]),
+    );
+    assert.equal(
+      target.workspace.folder.git(["config", "core.worktree"]),
+      copy.workspace_path,
+    );
+    assert.ok(
+      readFileSync(join(copy.workspace_path, ".git"), "utf8").includes(copy.id),
+    );
+    assert.ok(existsSync(join(copy.workspace_path, "empty")));
+    assert.equal(
+      readFileSync(join(copy.workspace_path, ".venv", "marker"), "utf8"),
+      "environment",
+    );
+    assert.deepEqual(
+      readFileSync(join(copy.workspace_path, "binary.bin")),
+      Buffer.from([0, 255, 1]),
+    );
+    target.workspace.write("nested/a.txt", "copy only", 2, a.id);
+    target.store.send(chat.id, a.id, "Only the copy");
+    assert.equal(source.workspace.read("nested/a.txt").content, "two");
+    assert.equal(source.store.messages(chat.id).length, 1);
+    projects.delete(original.id, {
+      confirm_name: original.name,
+      delete_artifacts: true,
+    });
+    projects.close();
+    projects = new Projects(dir);
+    const reopened = projects.get(copy.id);
+    assert.equal(reopened.workspace.read("nested/a.txt", 1).content, "one");
+    assert.equal(
+      reopened.workspace.folder.git(["show", "HEAD:nested/a.txt"]),
+      "copy only",
+    );
+    assert.equal(reopened.store.artifacts.info(artifact, a.id).complete, 1);
+    assert.equal(reopened.harness.run.status, "stopped");
+  } finally {
+    projects.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("duplication rejects invalid choices and active full copies without creating partial projects", () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-copy-active-"));
+  const projects = new Projects(dir);
+  try {
+    const original = projects.create("Source");
+    const source = projects.get(original.id);
+    assert.throws(
+      () => projects.duplicate(original.id, { name: "Copy", mode: "invalid" }),
+      /Choose/,
+    );
+    assert.throws(
+      () => projects.duplicate(original.id, { name: " ", mode: "full" }),
+      /name/,
+    );
+    source.workspace.locked = true;
+    assert.throws(
+      () => projects.duplicate(original.id, { name: "Copy", mode: "full" }),
+      /Stop the source/,
+    );
+    source.workspace.locked = false;
+    source.harness.requests = [{ status: "queued", remaining: [] }];
+    assert.throws(
+      () => projects.duplicate(original.id, { name: "Copy", mode: "full" }),
+      /queued requests/,
+    );
+    source.harness.requests = [];
+    assert.equal(projects.list().length, 1);
+  } finally {
+    projects.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 test("projects start with an editable default lead agent and isolate credentials, threads and state", () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-projects-"));
   const projects = new Projects(dir);

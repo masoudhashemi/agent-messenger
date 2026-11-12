@@ -137,7 +137,7 @@ export function renderDiffPreview(before, after) {
       last = i;
       return (
         gap +
-        `<div class="diff-line ${row.type}"><span class="line-number">${row.oldLine ?? ""}</span><span class="line-number">${row.newLine ?? ""}</span><span class="diff-sign">${row.type === "added" ? "+" : row.type === "removed" ? "−" : " "}</span><code>${escapeHtml(row.text.slice(0, 1000).replace(/\n$/, ""))}${row.text.length > 1000 ? " … [line clipped]" : !row.text.endsWith("\n") ? '<span class="no-newline"> ↵ no trailing newline</span>' : ""}</code></div>`
+        `<div class="diff-line ${row.type}"><span class="line-number">${row.oldLine ?? ""}</span><span class="line-number">${row.newLine ?? ""}</span><span class="diff-sign">${row.type === "added" ? "+" : row.type === "removed" ? "−" : " "}</span><code>${escapeHtml(row.text.replace(/\n$/, ""))}${!row.text.endsWith("\n") ? '<span class="no-newline"> ↵ no trailing newline</span>' : ""}</code></div>`
       );
     })
     .join("");
@@ -157,7 +157,6 @@ function webSearchNotice(body) {
 function renderSearch(result) {
   return `<section class="web-search-result"><div class="entry-label">Web search · ${escapeHtml(result.provider)}</div><strong>${escapeHtml(result.query)}</strong>${
     result.results
-      .slice(0, 5)
       .map((r) => {
         let url;
         try {
@@ -186,15 +185,20 @@ export function preview(body) {
     return `${parsed.title} · ${parsed.items.length} action${parsed.items.length === 1 ? "" : "s"} recorded`;
   return body.replace(/^Turn \d+ · Working note\n/, "").replace(/\s+/g, " ");
 }
+export function artifactButton(id, label = "View complete output") {
+  return id
+    ? `<button class="quiet" data-artifact="${escapeHtml(id)}">${escapeHtml(label)} ↗</button>`
+    : "";
+}
 export function renderMessage(body, chats = [], id = "") {
   if (body.startsWith("Tool result\n")) {
     try {
       const result = JSON.parse(body.slice(12));
-      return `<div class="entry-label">Tool result · ${escapeHtml(result.tool)}</div><pre><code>${escapeHtml(JSON.stringify(result, null, 2))}</code></pre>`;
+      return `<div class="entry-label">Tool result · ${escapeHtml(result.tool)}</div><pre><code>${escapeHtml(JSON.stringify(result, null, 2))}</code></pre>${artifactButton(result.artifact_id)}`;
     } catch {}
   }
   const search = webSearchNotice(body);
-  if (search) return renderSearch(search);
+  if (search) return renderSearch(search) + artifactButton(search.artifact_id);
   const ref = fileNotice(body);
   if (ref) return fileDiffCard(ref);
   const parsed = audit(body);
@@ -229,7 +233,7 @@ export function renderMessage(body, chats = [], id = "") {
                             : r.kind === "group"
                               ? "Group ready"
                               : "Action completed";
-          return `<div class="action-item ${r.error ? "action-error" : ""}"><span class="action-check">${r.error ? "!" : "✓"}</span><div><strong>${escapeHtml(label)}</strong>${r.path ? `<span class="action-target">${escapeHtml(r.path)}${r.revision ? ` · v${r.revision}` : ""}</span>` : ""}${item.action === "run_python" ? `<div class="execution-output">${r.stdout ? `<pre><code>${escapeHtml(r.stdout)}</code></pre>` : ""}${r.stderr ? `<pre><code>${escapeHtml(r.stderr)}</code></pre>` : ""}<small>Exit ${escapeHtml(r.exit_code ?? "—")} · ${escapeHtml(r.duration_ms)} ms</small></div>` : ""}${chat || r.name ? `<span class="action-target">${escapeHtml(chat?.name || r.name)}</span>` : ""}${r.error ? `<p>${escapeHtml(r.error)}</p>` : ""}${r.body ? `<div class="action-body">${markdown(r.body)}</div>` : ""}${!r.diff_posted && !r.error && ["write_file", "edit_file", "sed"].includes(item.action) ? fileDiffCard(r) : ""}${
+          return `<div class="action-item ${r.error ? "action-error" : ""}"><span class="action-check">${r.error ? "!" : "✓"}</span><div><strong>${escapeHtml(label)}</strong>${r.path ? `<span class="action-target">${escapeHtml(r.path)}${r.revision ? ` · v${r.revision}` : ""}</span>` : ""}${item.action === "run_python" ? `<div class="execution-output">${r.stdout ? `<pre><code>${escapeHtml(r.stdout)}</code></pre>` : ""}${r.stderr ? `<pre><code>${escapeHtml(r.stderr)}</code></pre>` : ""}<small>Exit ${escapeHtml(r.exit_code ?? "—")} · ${escapeHtml(r.duration_ms)} ms</small></div>` : ""}${chat || r.name ? `<span class="action-target">${escapeHtml(chat?.name || r.name)}</span>` : ""}${r.error ? `<p>${escapeHtml(r.error)}</p>` : ""}${r.body ? `<div class="action-body">${markdown(r.body)}</div>` : ""}${artifactButton(r.artifact_id)}${!r.diff_posted && !r.error && ["write_file", "edit_file", "sed"].includes(item.action) ? fileDiffCard(r) : ""}${
             !r.diff_posted && Array.isArray(r.changes)
               ? r.changes
                   .flatMap((e) => e.changes || [])

@@ -51,7 +51,7 @@ test("web search enforces per-agent permission, validates queries and hides keys
     );
     const result = await search.execute(s, a.id, { query: "query" });
     assert.equal(result.results.length, 1);
-    assert.equal(result.results[0].snippet.length, 600);
+    assert.equal(result.results[0].snippet, "[redacted] " + "a".repeat(1000));
     assert.ok(!JSON.stringify(result).includes("secret-key"));
     assert.ok(!JSON.stringify(search.status()).includes("secret-key"));
     s.setAgentTools(a.id, []);
@@ -138,8 +138,31 @@ test("harness delivers search results on a subsequent turn and saves clickable s
           working_note: { name: "Research", body: "Inspect sources" },
           actions:
             turns === 1
-              ? [{ type: "web_search", query: "query" }, { type: "finish" }]
-              : [{ type: "finish" }],
+              ? [
+                  { type: "web_search", query: "query" },
+                  {
+                    type: "finish",
+                    summary:
+                      "Completed the fixture task; see the delivered result and evidence.",
+                  },
+                ]
+              : turns === 2
+                ? [
+                    {
+                      type: "read_source",
+                      source_id:
+                        context.previous_action_results[0].sources.results[0]
+                          .source_id,
+                    },
+                  ]
+                : [
+                    { type: "reply", body: "Evidence: https://example.com" },
+                    {
+                      type: "finish",
+                      summary:
+                        "Completed the fixture task; see the delivered result and evidence.",
+                    },
+                  ],
         });
       },
     );
@@ -161,7 +184,7 @@ test("harness delivers search results on a subsequent turn and saves clickable s
     h.start([a.id], "Research", 3);
     while (h.run.status === "running")
       await new Promise((r) => setTimeout(r, 5));
-    assert.equal(turns, 2);
+    assert.equal(turns, 3);
     const message = s
       .snapshot()
       .chats.flatMap((c) => c.messages)
@@ -230,14 +253,28 @@ test("automatic teammates inherit tools when omitted, can search, and can explic
                   prompt: "Research with sources",
                   task: "Search for official Python documentation",
                 },
-                { type: "finish" },
+                {
+                  type: "finish",
+                  summary:
+                    "Completed the fixture task; see the delivered result and evidence.",
+                },
               ]
             : ++childTurns === 1
               ? [
                   { type: "web_search", query: "Python documentation" },
-                  { type: "finish" },
+                  {
+                    type: "finish",
+                    summary:
+                      "Completed the fixture task; see the delivered result and evidence.",
+                  },
                 ]
-              : [{ type: "finish" }];
+              : [
+                  {
+                    type: "finish",
+                    summary:
+                      "Completed the fixture task; see the delivered result and evidence.",
+                  },
+                ];
         return JSON.stringify({
           working_note: { name: "Work", body: "Complete the research task" },
           actions,

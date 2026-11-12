@@ -1,3 +1,6 @@
+import { Groups } from "./groups.js";
+import { Artifacts } from "./artifacts.js";
+import { ResearchSources } from "./research-sources.js";
 import { validateManifest, httpPluginTool } from "./http-plugins.js";
 import { chmodSync } from "node:fs";
 import { tools as toolRegistry } from "./tools/index.js";
@@ -28,6 +31,9 @@ export class Store {
       this.db.exec(
         "ALTER TABLE agents ADD COLUMN tools TEXT NOT NULL DEFAULT '[]'",
       );
+    this.artifacts = new Artifacts(this);
+    this.sources = new ResearchSources(this);
+    this.groups = new Groups(this);
     this.db
       .prepare("UPDATE agents SET status='idle' WHERE status='running'")
       .run();
@@ -274,6 +280,11 @@ export class Store {
       this.db.exec("ROLLBACK");
       throw e;
     }
+    if (kind === "group")
+      this.groups.update(id, {
+        purpose: summary || name.trim(),
+        owner_id: actor || members[0],
+      });
     return this.chat(id);
   }
   chat(id) {
@@ -281,6 +292,7 @@ export class Store {
     if (!c) throw new AppError("Conversation not found", 404);
     return {
       ...c,
+      ...(c.kind === "group" ? { group: this.groups.info(c.id) } : {}),
       members: this.all("SELECT agent_id FROM members WHERE chat_id=?", id).map(
         (x) => x.agent_id,
       ),
@@ -297,7 +309,11 @@ export class Store {
     const membersByChat = new Map(rows.map((c) => [c.id, []]));
     for (const m of this.all("SELECT chat_id,agent_id FROM members"))
       membersByChat.get(m.chat_id)?.push(m.agent_id);
-    return rows.map((c) => ({ ...c, members: membersByChat.get(c.id) || [] }));
+    return rows.map((c) => ({
+      ...c,
+      ...(c.kind === "group" ? { group: this.groups.info(c.id) } : {}),
+      members: membersByChat.get(c.id) || [],
+    }));
   }
   addMember(chat, id, actor = null) {
     if (actor) this.requireMember(chat, actor);

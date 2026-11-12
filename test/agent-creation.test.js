@@ -41,6 +41,17 @@ test("new teammates participate, receive a direct task, and cannot see creator p
     async (messages) => {
       const context = JSON.parse(messages[1].content);
       calls++;
+      if (context.you.id === lead.id && calls > 1)
+        return JSON.stringify({
+          working_note: { name: "Plan", body: "Received the test report." },
+          actions: [
+            {
+              type: "finish",
+              summary:
+                "Completed the fixture task; see the delivered result and evidence.",
+            },
+          ],
+        });
       if (context.you.id === lead.id)
         return JSON.stringify({
           working_note: { name: "Plan", body: "Delegate testing." },
@@ -51,21 +62,32 @@ test("new teammates participate, receive a direct task, and cannot see creator p
               prompt: "Test carefully",
               task: "Inspect the shared files and report.",
             },
-            { type: "finish" },
+            {
+              type: "finish",
+              summary:
+                "Completed the fixture task; see the delivered result and evidence.",
+            },
           ],
         });
       childContext = messages;
       childId = context.you.id;
       return JSON.stringify({
         working_note: { name: "Testing", body: "Read the delegated task." },
-        actions: [{ type: "finish" }],
+        actions: [
+          { type: "reply", body: "Inspection complete." },
+          {
+            type: "finish",
+            summary:
+              "Completed the fixture task; see the delivered result and evidence.",
+          },
+        ],
       });
     },
   );
   h.configure({ allow_agent_creation: true, max_new_agents: 1 });
   h.start([lead.id], "Coordinate a test", 4);
   while (h.run.status === "running") await new Promise((r) => setTimeout(r, 5));
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
   assert.equal(h.run.created_agents[0].created_by, lead.id);
   assert.ok(h.run.ids.includes(childId));
   assert.ok(!JSON.stringify(childContext).includes("PRIVATE_CREATOR_SENTINEL"));

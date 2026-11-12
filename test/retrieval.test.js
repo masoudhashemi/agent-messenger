@@ -193,11 +193,14 @@ test("file ranges, revisions and long-line continuations preserve exact content"
     }).content,
     "last\n",
   );
-  assert.ok(
-    r
-      .execute(a.id, { type: "read_file_diff", path: "long.py", revision: 2 })
-      .results.some((r) => r.type === "added"),
-  );
+  let diffAction = { type: "read_file_diff", path: "long.py", revision: 2 };
+  const diffRows = [];
+  do {
+    const part = r.execute(a.id, diffAction);
+    diffRows.push(...part.results);
+    diffAction = part.next;
+  } while (diffAction);
+  assert.ok(diffRows.some((row) => row.type === "added"));
   assert.throws(() =>
     r.execute(a.id, { type: "read_file", path: "../secret" }),
   );
@@ -262,7 +265,7 @@ test("context stays within its byte budget and references omitted tool results",
     budget: 16000,
   });
   assert.ok(frame.usage.bytes <= 16000);
-  assert.ok(frame.payload.previous_action_results[0].truncated);
+  assert.equal(frame.payload.previous_action_results[0].content_loaded, false);
   assert.deepEqual(
     frame.payload.previous_action_results[0].source.message_ids,
     [7],

@@ -163,7 +163,7 @@ The manifest extracts the `results` field. Its calls appear as generic **Tool re
 | “Plugin endpoint did not return JSON” | Use an API endpoint that returns JSON, rather than an HTML page. |
 | “Plugins can connect only to public HTTPS services” | Localhost, private network and metadata-service addresses are unavailable to HTTP plugins. |
 | “Plugin request cancelled or timed out” | A request was cancelled or exceeded its 20-second time limit. |
-| A large result has `truncated: true` | The response exceeded the model preview limit; narrow the provider query or choose a smaller response field. |
+| A result has `content_loaded: false` | The complete result is saved. Use its `read_with` action to read pages, or `search_artifact` to locate text. |
 
 ## Supported APIs and limits
 
@@ -182,7 +182,7 @@ This UI installs declarative HTTP API plugins. It does not execute uploaded Java
 | Credential | Single line, up to 4,000 characters |
 | Timeout | 20 seconds, with run cancellation support |
 | Response body | JSON, at most 1 MB |
-| Model preview | Results over 9,000 serialized UTF-8 bytes return a clipped preview marked `truncated` |
+| Model context | Results over 8,000 serialized UTF-8 bytes return a durable artifact reference; complete content is available through paging, search, and download |
 | Redirects | Rejected; use the final endpoint |
 | Response field | Dot-separated object keys, such as `data.results`; no array-index expressions |
 
@@ -220,7 +220,7 @@ Names must be unique and must not collide with existing actions such as `send`, 
 
 The execution context includes `store`, authenticated `actor`, cancellation `signal`, project `workspace` when available, and the built-in `webSearch` service. Check chat membership using `store.requireMember` before reading private chats. Use workspace methods for revision-checked project writes. Model-provided actor IDs must never override `actor`.
 
-Return a JSON object of at most 12,000 UTF-8 bytes. Results are saved in the caller's self chat and passed into its next turn; the harness defers `finish` until that turn. Generic tools get an escaped JSON result card. Web search retains its custom source cards. Results are not broadcast to other agents; the caller can share relevant findings through messaging.
+Return a JSON object. Complete results are saved as artifacts linked from the caller's self chat; small results or references to large results are passed into its next turn; the harness defers `finish` until that turn. Generic tools get an escaped JSON result card. Web search retains its custom source cards. Results are not broadcast to other agents; the caller can share relevant findings through messaging.
 
 An optional `status(context)` function can return `{configured: true, message: "Ready"}` for the UI and model instructions. Keep it fast and free of side effects. It must never return API keys. Read credentials from server environment variables inside the implementation. Check configuration before calling external services; honor cancellation, set timeouts, bound responses, and return safe error messages without credentials.
 

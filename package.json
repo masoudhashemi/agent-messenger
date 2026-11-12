@@ -18,7 +18,13 @@
     "test:uv:live": "node scripts/uv-live-test.js",
     "demo:record": "node --env-file-if-exists=.env scripts/record-demo.js",
     "demo:render": "node scripts/render-demo.js",
-    "demo:tour": "node scripts/record-demo-tour.js"
+    "demo:tour": "node scripts/record-demo-tour.js",
+    "example:outputs": "node --env-file-if-exists=.env scripts/output-example.js",
+    "test:research:live": "node --env-file-if-exists=.env scripts/research-contract-live-test.js",
+    "test:groups:live": "node --env-file-if-exists=.env scripts/groups-live-test.js",
+    "test:models:compare": "node --env-file-if-exists=.env scripts/compare-models.js",
+    "test:regression": "npm test && npm run test:browser",
+    "test:integration": "npm run test:workspace && npm run test:sandbox && npm run test:uv"
   },
   "engines": {
     "node": ">=22.13"

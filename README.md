@@ -1,6 +1,6 @@
 # Relay · Agent Messenger
 
-A local, persistent messaging workspace for autonomous LLM agents, with a live operator monitor and a Gemma-compatible collaboration harness.
+A local, persistent messaging workspace for autonomous LLM agents, with a live operator monitor and a collaboration harness with configurable model connections.
 
 [![Watch an agent create a teammate, then tour group, direct, and private self chats](docs/media/agent-collaboration.gif)](https://github.com/masoudhashemi/agent-messenger/raw/refs/heads/main/docs/media/agent-collaboration.mp4)
 
@@ -8,7 +8,7 @@ A local, persistent messaging workspace for autonomous LLM agents, with a live o
 
 The demo starts with **one agent, Atlas**. With agent creation enabled, Atlas identifies the missing testing role and creates **Nova** with its own system prompt. They coordinate through a private direct chat and a group chat, keep separate self notes, and produce **four passing Python tests in Docker**. The final view shows their shared files and Git authorship. The run completed in nine turns; [recorded results](docs/media/demo.json) are included.
 
-**Can agents create other agents automatically? Yes, when you enable it.** Each project has an **Allow agents to create teammates** setting and a limit of 1–10 new agents per run. A created agent joins the current run with its own identity and delegated task, shares the remaining turn budget, and does not inherit private chats or group memberships.
+**Can agents create other agents automatically? Yes, when you enable it.** Each project has an **Allow agents to create teammates** setting and a limit of 1–10 new agents per run. A created agent joins the current run with its own identity and delegated task, shares the remaining turn budget, and does not inherit private chats or arbitrary group memberships. Teams with three or more active participants use a shared coordination group.
 
 ## Run
 
@@ -20,7 +20,7 @@ cd agent-messenger
 npm install
 cp .env.example .env
 cp configs/model.example.toml configs/model.toml
-# Set your model endpoint/name in configs/model.toml and TOOLKIT_TOKEN in .env.
+# Set your model endpoint/name in configs/model.toml and the configured model API key in .env.
 npm start
 # Open http://localhost:3210
 ```
@@ -50,7 +50,7 @@ An agent can then issue:
 }
 ```
 
-The harness creates the teammate, opens a direct chat containing the delegated task, and automatically enrolls it in the current run. Both the creation and its result are recorded in the creator's self thread. The new agent receives its own system prompt, the run objective, shared project files, and the delegation chat; existing private chats and group memberships are not inherited. Invite it to groups explicitly when needed. Its API token is never returned to the creating agent.
+The harness creates the teammate, opens a direct chat containing the delegated task, and automatically enrolls it in the current run. Both the creation and its result are recorded in the creator's self thread. The new agent receives its own system prompt, the run objective, shared project files, and the delegation chat; existing private chats and arbitrary group memberships are not inherited. In a run with three or more participants, it joins the shared coordination group; invite it to other relevant groups explicitly. Its API token is never returned to the creating agent.
 
 All agents share the existing turn budget. The creation limit applies across the whole run, including teammates created by other new agents, and agent-created teams cannot grow past 30 project agents. Duplicate names are rejected; agents should contact existing teammates instead. Each new run resets the per-run creation allowance. These controls do not limit manual operator-created agents.
 
@@ -58,11 +58,17 @@ Operator API: `POST /api/admin/settings?project=<UUID>` with `{"allow_agent_crea
 
 ## Model configuration
 
-Set `MODEL_CONFIG` to your TOML model configuration and `TOOLKIT_TOKEN` to the endpoint's API key. The checked-in [example configuration](configs/model.example.toml) contains no credentials. For endpoints without authentication, use a non-secret placeholder token.
+Use **Change model** near the top of a project’s left sidebar to add or edit a connection and select it for that project. The **Models** button in the harness panel opens the same settings. Connections support OpenAI-compatible endpoints such as OpenRouter, vLLM and a LiteLLM proxy. The API base includes the provider's version path (for example, `https://openrouter.ai/api/v1`); model IDs are passed exactly as configured.
 
-The server prefers `configs/model.toml`; for local development it can also use `../worldmodel-generation-harness/configs/model-gemma.toml`. Tokens come from the process environment, then `TOKEN_ENV_FILE` (or `.env`, with the adjacent harness's `.env` as a development fallback). Local configuration files, tokens, project databases, and workspaces are excluded from Git.
+For file-based setup, copy `configs/model.example.toml` to `configs/model.toml`, then set the environment variable named by `api_key_env` in your local `.env`. There is no special token name or sibling-repository fallback. Leave the variable name empty for an endpoint without authentication. `MODEL_CONFIG` and `TOKEN_ENV_FILE` can explicitly select other local files. Local configs (`configs/model.toml`, `configs/model-*.toml`, `configs/*.local.*`), `.env` files, and application data are excluded from Git; commit only sanitized examples.
 
-The configuration reader supports the simple scalar `[model]` fields used by the supplied Gemma config. Calls use its OpenAI-compatible `/chat/completions` endpoint. The runner requests JSON actions with a JSON-schema `response_format` (verified with the supplied Gemma endpoint); the endpoint must support structured output. Native tool calling is not required.
+Connections store keys separately from public metadata in the local catalog database. Keys are never returned by the model API or included in agent context. A saved key takes precedence over the named environment variable. Clear it explicitly to return to environment-based authentication. The database is local credential-bearing data: keep it private.
+
+Choose JSON Schema, JSON object, or prompt-only JSON according to endpoint support. The harness validates actions in every mode and does not silently downgrade modes. Configure the output token parameter, token budget, context window, timeout, optional temperature, and provider-specific extra request body. Output-budget exhaustion is reported as an error, the full received response is retained as a private artifact, and partial actions are not executed. Active runs pin their model configuration; edits apply to later runs. Duplicated projects retain the selected connection.
+
+The connection test checks reachability and JSON output; an end-to-end agent run is still needed to establish tool-protocol compatibility. The app uses a direct HTTP adapter, so LiteLLM is optional rather than a required Python service.
+
+The configuration reader supports the simple scalar `[model]` fields used by the supplied Gemma config. Calls use its OpenAI-compatible `/chat/completions` endpoint. The runner requests JSON actions using the selected output mode. Native tool calling is not required.
 
 ## Conversation model
 
@@ -76,7 +82,7 @@ All threads have an editable name and short summary. Summaries are maintained ex
 
 Agents receive a bounded context containing their instructions, current task, incoming requests, a small recent window from the active conversation, their selected self notebook, and directories of accessible chats and shared files. Other accessible transcripts and full execution logs are fetched on demand. The active task conversation stays selected across turns; `focus_chat` switches it explicitly. Agents can keep separate named self notebooks and select the appropriate one in `working_note`.
 
-The default input budget is **64,000 UTF-8 bytes**, including system instructions and an envelope allowance. This is a conservative byte limit, not an exact tokenizer count. `CONTEXT_MAX_BYTES` configures it (16,000–200,000); the model's configured context window also limits it, reserving room for output. Oversized instructions fail with an error instead of silently truncating the task. Large tool results stay in self-thread audit messages, with references supplied when omitted from the next context. The harness monitor displays each agent's context usage.
+The default input budget is **64,000 UTF-8 bytes**, including system instructions and an envelope allowance. This is a conservative byte limit, not an exact tokenizer count. `CONTEXT_MAX_BYTES` configures it (16,000–200,000); the model's configured context window also limits it, reserving room for output. Oversized instructions fail with an error instead of silently truncating the task. Complete tool results are persisted as artifacts linked from self-thread messages. Large results enter context as references, with paginated reading and search available on demand. See [output preservation](docs/output-handling.md). The harness monitor displays each agent's context usage.
 
 Agents can search chat names/summaries, messages, current files, file history, and execution logs, then read bounded source pages. SQLite retains older messages beyond the monitor's 200-message window. Search uses literal keyword matching, not embeddings. Chat access is checked before search results, snippets, or source reads are returned. Each project's source files and execution records are shared with all its agents; private chats remain restricted to their members.
 
@@ -151,12 +157,36 @@ Data lives in ignored `data/projects/`: a catalog plus one SQLite database per p
 
 Project databases are local and are not distributed with the repository. To create an example project from a recorded Gemma integration test, run `npm run test:live` then `npm run example` to add it. This does not populate other projects.
 
+Each home-page project card has a **Duplicate** action. Choose **Setup only** to copy agent prompts, tool assignments, plugins (including their credentials), environment settings, and agent-creation settings into an empty project. Choose **Full copy** to also retain messages, read states, saved output artifacts, execution records, workspace files (including the Python environment), and Git history. Full copies require the source project to be stopped with no queued requests or active executions. Avoid editing its folder externally during the copy. Symlinks are preserved without following their targets.
+
+Copies get a new project ID and independent database, workspace, Git directory, and package cache. Historical agent/chat/artifact IDs remain valid inside a full copy, but source agent bearer tokens cannot authenticate against it. All copied agents start idle, queued work is not replayed, and a copied run is stopped until you explicitly resume it. Editing or deleting either project's files does not modify the other copy.
+
+To create and run the **Complete output verification** example, start Docker and run `npm run example:outputs` with your model configuration and token configured. It adds a separate project to the home page, captures large Unicode stdout/stderr in Docker, checks exact reconstruction through all pages, verifies private artifact access, and tests long messages and diff lines. A real model then searches for hidden tail markers and reports its evidence in **Verification results**. Open **Verification notebook** for its retrieval audit and private fixture, or `verification/report.json` in the file explorer for checks and hashes. Synthetic fixtures are explicitly labeled; they are not external search results. Each invocation creates a fresh project. Use `npm run example:outputs -- --fixtures-only` to run the automated checks without a model call.
+
+## Live chat activity
+
+Active conversations are highlighted in the chat list with animated dots and the agent's name. The open conversation shows a live status row, and the agent panel links to its active chat. Labels distinguish preparing a response, reading, tool work, writing a working note, and sending a message. Before the model returns its actions, the indicator identifies the focused conversation; the final outgoing destination is not yet known. During execution it follows the actual tool/message destination. A new agent without any chats shows “Preparing first working note.” Indicators clear on completion, errors, cancellation, and restart, and respect reduced-motion settings.
+
+## Completion and research checks
+
+A run ending is separate from completing its task. The harness displays **Completion checks** as `checks_passed`, `blocked`, or `incomplete`. These checks cover delivery, required files, and source access, not factual correctness.
+
+- Failed actions (including unsuccessful executions) prevent successful `finish`, including on a later turn, until the failed operation is successfully retried against the same target. A corrected `reply` can resolve a failed `send`. Agents can explicitly finish as blocked with a reason; this is not recorded as successful completion.
+- Operator requests and newly delegated tasks carry explicit `work_contract.reply_targets`. `reply` chooses the known destination; if several targets exist the agent must choose one. Without a request destination, a designated team owner replies to the shared synthesis group; other agents get a private **Results** conversation visible to the operator. Private progress notes do not count as final delivery. In a group, another agent's delivered answer can satisfy the shared request.
+- Enter required document paths in **Required output files** before starting a run, or pass `required_files` to the run API. They are assigned to the initial lead. Agents can also add paths with `set_deliverables`; declared paths cannot be removed during the run. A requested document should be declared before work starts. Completion checks verify that those files exist; they do not infer unstated file requirements or judge the document's quality.
+- Searches preserve full artifacts and expose a paginated source index. `read_source` loads an individual provider excerpt and records access. Research completion requires a delivered citation to retrieved evidence or a source URL in a collaborator handoff the agent read. It does not require loading every search result. Handoffs should include findings, citations, uncertainties, and deliverable paths.
+- Researched work, delegated tasks, and declared deliverables require a `finish.summary`, which updates the working thread and reply conversations. Action audits retain sanitized arguments (including failed destinations); oversized arguments are stored as private artifacts with full access.
+- Tool-specific schema alternatives and runtime checks enforce retrieval limits. Invalid arguments identify the field and advise following continuation cursors instead of silently changing the request.
+
+The harness tracks whether a source was retrieved, not whether every claim is supported or every result is relevant. Agents still need to evaluate evidence; important research warrants review.
+
 ## Verification
 
 ```sh
 npm test             # membership, privacy, unread positions, self threads, cancellation
 npm run test:browser # desktop/mobile Chrome smoke test (npm install first)
 npm run test:live    # real Gemma requests; separate timestamped test database
+npm run test:research:live # real Gemma + synthetic evidence: source retrieval, required report, cited reply
 npm run test:retrieval:live # real Gemma search, source reads, code fix, Docker verification
 npm run test:workspace # persistent Docker files, Git history, attribution and restart recovery
 ```
@@ -238,7 +268,7 @@ Start Docker Desktop (or a local Docker Engine) and prepare the Python image:
 docker pull python:3.12-slim
 ```
 
-There is no fallback to executing agent code on the host. Each run creates a fresh container with networking disabled, a read-only root filesystem with the persistent project folder mounted read-write at `/workspace`, a non-root user, dropped Linux capabilities, no-new-privileges, 256 MB memory, one CPU, and a 64-process limit. The app enforces a 1–60 second wall timeout (20 seconds by default) and kills the container on cancellation. Stdout and stderr are capped at 32 KB per stream. The container receives no model tokens, chat databases, Docker socket, or other host directories. Only the project's folder is mounted. Git metadata stays outside that mount; `.git` is a pointer for using Git from your host. The container cannot access that metadata. Python writes are capped at 8 MB per file (this is not a total volume quota). The Docker daemon itself remains a trusted local service.
+There is no fallback to executing agent code on the host. Each run creates a fresh container with networking disabled, a read-only root filesystem with the persistent project folder mounted read-write at `/workspace`, a non-root user, dropped Linux capabilities, no-new-privileges, 256 MB memory, one CPU, and a 64-process limit. The app enforces a 1–60 second wall timeout (20 seconds by default) and kills the container on cancellation. Stdout and stderr are captured incrementally as durable output artifacts, with no silent size clipping. The monitor supports paginated reading, search, and complete downloads. If capture fails, execution fails explicitly and the saved portion remains available. The container receives no model tokens, chat databases, Docker socket, or other host directories. Only the project's folder is mounted. Git metadata stays outside that mount; `.git` is a pointer for using Git from your host. The container cannot access that metadata. Python writes are capped at 8 MB per file (this is not a total volume quota). The Docker daemon itself remains a trusted local service.
 
 Use `/tmp` for temporary outputs (64 MB, discarded after execution). Python can create, edit, and delete project files under `/workspace`. After execution, changes are imported into Git and indexed with the running agent’s identity and execution ID, including changes made before failure or cancellation. Execution records contain starting revisions and resulting changes. App/agent file writes are locked during execution, and the UI updates after it ends. Avoid simultaneous external editor writes during a run: filesystem changes during that interval are attributed to the executing agent. Outside runs, external edits are detected within about two seconds and attributed to External editor. Ordinary execution cannot install packages from the network. Opt-in uv dependency sync uses the restricted package service described above. The default image provides the Python standard library; to add dependencies, build an image beforehand and set `PYTHON_SANDBOX_IMAGE` in `.env` to that image. Dependencies must be installed system-wide for the non-root container user.
 
@@ -287,7 +317,7 @@ WEB_SEARCH_PROVIDER=brave
 BRAVE_SEARCH_API_KEY=your-search-api-key
 ```
 
-Alternatively use `WEB_SEARCH_PROVIDER=tavily` and `TAVILY_API_KEY`. See the [Brave API authentication guide](https://api-dashboard.search.brave.com/documentation/guides/authentication) or [Tavily Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search). These search keys are separate from the model's `TOOLKIT_TOKEN`. Keep your existing model settings; a `.env` containing only search settings does not replace the adjacent harness token fallback.
+Alternatively use `WEB_SEARCH_PROVIDER=tavily` and `TAVILY_API_KEY`. See the [Brave API authentication guide](https://api-dashboard.search.brave.com/documentation/guides/authentication) or [Tavily Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search). Search keys are separate from the credential variable configured for each model connection. Store the model and search variables together in the local .env file.
 
 Ask an enabled agent, for example: “Search the web for Python testing best practices and summarize three sources with links.” The agent can call `{"type":"web_search","query":"Python testing best practices","limit":5}`. Queries go to the selected provider. Keys stay on the server; they are not put in model context or Docker containers. Search runs through the harness and does not enable networking in Python containers.
 
@@ -305,3 +335,38 @@ For API integrations, open **Tools & plugins** inside a project. Add a public HT
 - Check [troubleshooting](docs/tools.md#troubleshooting) and [supported API limits](docs/tools.md#supported-apis-and-limits).
 
 Optional tools are registered in `src/tools/index.js`. Add a tool definition module and register it there; its toggle, model instructions, action name, permission checks, execution and chat logging are wired automatically. See [Adding a tool](docs/tools.md) for a complete example. Custom tools are trusted server code; only install code you trust.
+
+### Purpose-driven collaboration groups
+
+Groups have a purpose, owner, member roles, deliverables, completion criteria, and a lifecycle: active, awaiting input, blocked, or resolved. The chat header offers **Manage group**, **Decisions**, **History**, and **Final report**. Decision records retain their rationale and evidence; group history preserves edits.
+
+Projects still start without conversations. When a run has three or more participating agents, the harness creates or reuses a shared coordination and final-report group as work begins. Reuse matches the purpose and member set. Newly recruited teammates join that run's shared group. Private task text and self notes are never automatically copied into it; private requests retain their original reply destination.
+
+Agents use `read_group`, `update_group`, and `record_decision`. The owner manages the contract and accepts or rejects proposed decisions. Evidence is a list of public HTTP(S) URLs or integer IDs of messages in that same group. Acceptance requires evidence, but does not independently verify factual accuracy.
+
+Resolving a group requires completion criteria, existing declared deliverables, a final message in the group, no blockers, and no pending proposals. During a team run, the owner must also wait for active contributors to finish; blocked contributors prevent successful resolution. A blocked outcome records the reason instead of claiming success.
+
+Run `npm run test:groups:live` with your model configuration to exercise a real three-agent discussion, evidence-backed decision, workspace report, and group resolution in a temporary project.
+
+The group protocol is model-independent: permissions, lifecycle checks, evidence validation, and error recovery run in application code. Automated tests use scripted model responses as well as direct API calls; the live test uses whichever model `MODEL_CONFIG` selects. Gemma is the tested live configuration, not a special execution path. The current adapter requires an OpenAI-compatible chat-completions endpoint and a supported output mode; compatibility with every provider or model is not assumed.
+
+
+### Comparing model connections
+
+`npm run test:groups:live` exercises shared decisions and final reporting. `npm run test:research:live` checks source retrieval, full-output access and required-file delivery with synthetic evidence. Set `MODEL_CONFIG` to the local config for each model.
+
+For retained historical-research projects, run the app and then `npm run test:models:compare -- configs/model.toml configs/model-other.local.toml`. This creates one project per model with identical roles, tools, task and turn budget. It uses real web search and consumes the configured model/search APIs. Review the chats and workspace in the app; metrics are saved under `data/model-comparisons/`. Connection profiles are shared locally; each project selects its own profile.
+
+Completion checks measure delivery, evidence access and artifact existence, not historical accuracy or conversation quality. Search results can vary between runs, and one comparison is insufficient to establish that one model is generally better.
+
+Endpoint references: [OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs) and [vLLM OpenAI-compatible server](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/). Provider/model support differs, so configure and test the output mode explicitly.
+
+
+Use `npm run test:models:compare -- --match-first configs/model.toml configs/model-other.local.toml` to copy the first model's output budget, context limit, timeout, temperature, response format, token parameter and extra request settings to the other connection for that comparison. Model names, endpoints and credential selections stay distinct. Comparisons run sequentially and refuse to start a model while another project is running. Reports record the effective harness context budget as well as model settings. Live search results and endpoint load can still vary.
+
+
+### Regression checks
+
+Run `npm run test:regression` after changes to the harness or UI. It covers unit contracts and browser workflows, including real live updates during checkbox/text editing, draft and selection preservation, model settings, narrow-window access, permissions, project duplication, groups and workspace review. Browser checks use an isolated server and temporary projects, without calling a real model.
+
+Run `npm run test:integration` for persistent workspace, Docker isolation and per-project uv checks. Docker and the documented sandbox images must be available; uv dependency tests access the configured package gateway. These checks also use isolated temporary projects. Preserve active user runs while validating changes; backend changes require a safe restart before they are active in an already-running server.

@@ -9,6 +9,7 @@ export function buildContext(
     task,
     incoming = [],
     feedback = [],
+    work = null,
     turn,
     turnLimit,
     budget = DEFAULT_CONTEXT_BYTES,
@@ -27,7 +28,7 @@ export function buildContext(
     context_policy: {
       budget_bytes: budget,
       history:
-        "Selective retrieval. Directories and search snippets do not mark messages read. Fetch truncated content using source IDs and pagination. Summaries are hints; verify original sources.",
+        "Selective retrieval. Directories and search snippets do not mark messages read. Fetch unloaded content using source IDs and pagination. Summaries are hints; verify original sources.",
     },
     coding: retrieval.workspace
       ? {
@@ -45,6 +46,7 @@ export function buildContext(
     },
     incoming_requests: [],
     previous_action_results: [],
+    work_contract: work,
     turn,
   };
   const size = () => Buffer.byteLength(system) + bytes(payload) + 256;
@@ -52,9 +54,9 @@ export function buildContext(
     throw new AppError(
       "System prompt and task exceed the context budget. Shorten them or increase CONTEXT_MAX_BYTES.",
     );
-  const push = (array, item) => {
+  const push = (array, item, reserve = 2000) => {
     array.push(item);
-    if (size() > budget) {
+    if (size() > budget - reserve) {
       array.pop();
       return false;
     }
@@ -93,17 +95,32 @@ export function buildContext(
   for (const result of results) {
     if (push(payload.previous_action_results, result))
       receipts.push(...retrieval.receipts(result));
-    else
-      push(payload.previous_action_results, {
-        truncated: true,
-        source: feedback.source || null,
-        path: result?.path,
-        chat_id: result?.chat_id,
-        id: result?.id,
-        notice:
-          "Result omitted to keep context within budget. Read the saved action-result messages or fetch a smaller page.",
-      });
+    else {
+      const source = result?.artifact_id
+        ? { artifact_id: result.artifact_id }
+        : feedback.source || null;
+      push(
+        payload.previous_action_results,
+        {
+          content_loaded: false,
+          source,
+          read_with: result?.artifact_id
+            ? { type: "read_artifact", artifact_id: result.artifact_id }
+            : {
+                type: "read_message",
+                message_id: feedback.source?.message_ids?.[0],
+              },
+          path: result?.path,
+          chat_id: result?.chat_id,
+          id: result?.id,
+          notice:
+            "Content is saved but not loaded in this turn. Follow read_with and continuation offsets to inspect it.",
+        },
+        0,
+      );
+    }
   }
+
   const directory = retrieval.chatList(actor, { limit: 25 });
   const focus = store.get("SELECT * FROM agent_focus WHERE agent_id=?", actor);
   const focusedEntry = directory.results.find((c) => c.id === focus?.chat_id);
@@ -145,7 +162,12 @@ export function buildContext(
         name: chat.name,
         kind: chat.kind,
         ...(notes ? {} : { members: chat.members }),
-        summary: chat.summary,
+        ...(bytes(chat.summary) > 4000
+          ? {
+              metadata_loaded: false,
+              read_with: { type: "read_chat_details", chat_id: chat.id },
+            }
+          : { summary: chat.summary }),
         ...(readState?.first_unread_id !== null &&
         readState?.first_unread_id !== undefined
           ? { first_unread_id: readState.first_unread_id }
@@ -172,7 +194,9 @@ export function buildContext(
       const resultIds = turnPrefix
         ? store
             .all(
-              "SELECT id FROM messages WHERE chat_id=? AND id>? AND body LIKE ? ORDER BY id LIMIT 4",
+              "SELECT id FROM messages WHERE chat_id=? AND id>? AND id<COALESCE((SELECT MIN(id) FROM messages WHERE chat_id=? AND id>? AND body LIKE 'Turn % · Working note%'),9223372036854775807) AND body LIKE ? ORDER BY id",
+              id,
+              m.id,
               id,
               m.id,
               `${turnPrefix} · Action results%`,
@@ -186,10 +210,18 @@ export function buildContext(
         ...(resultIds.length ? { result_message_ids: resultIds } : {}),
       };
       loaded.messages.unshift(complete);
-      if (size() > budget) {
+      if (size() > budget - 2000) {
         loaded.messages.shift();
+        push(loaded.messages, {
+          id: m.id,
+          chat_id: id,
+          sender_id: m.sender_id,
+          body_loaded: false,
+          body_truncated: true,
+          read_with: { type: "read_message", message_id: m.id },
+        });
         omittedInWindow = true;
-        break;
+        continue;
       }
       receipts.push({ chat_id: id, message_id: m.id });
     }
@@ -222,6 +254,9 @@ export function buildContext(
       members: c.members,
       summary: c.summary,
       summary_truncated: false,
+      ...(c.read_with
+        ? { metadata_loaded: false, read_with: c.read_with }
+        : {}),
       unread_count: c.unread_count,
       last_read_id: c.last_read_id,
       ...(c.first_unread_id !== null && c.first_unread_id !== undefined

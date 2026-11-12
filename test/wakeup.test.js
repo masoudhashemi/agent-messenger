@@ -2,7 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Store } from "../src/store.js";
 import { Harness } from "../src/harness.js";
-const response = (actions = [{ type: "finish" }]) =>
+const response = (
+  actions = [
+    {
+      type: "finish",
+      summary:
+        "Completed the fixture task; see the delivered result and evidence.",
+    },
+  ],
+) =>
   JSON.stringify({
     working_note: { name: "Work", body: "Handle the new message." },
     actions,
@@ -33,7 +41,18 @@ test("a new group message starts members automatically after completion", async 
     async (messages) => {
       const ctx = JSON.parse(messages[1].content);
       seen.push(ctx);
-      return response();
+      return response(
+        ctx.incoming_requests.length
+          ? [
+              { type: "reply", body: "Request handled." },
+              {
+                type: "finish",
+                summary:
+                  "Completed the fixture task; see the delivered result and evidence.",
+              },
+            ]
+          : undefined,
+      );
     },
   );
   h.start([a.id], "Old task", 4);
@@ -43,11 +62,13 @@ test("a new group message starts members automatically after completion", async 
   h.wake(m);
   await settle(h);
   assert.deepEqual(new Set(seen.map((x) => x.you.id)), new Set([a.id, b.id]));
-  assert.ok(
-    seen.every((x) =>
-      x.incoming_requests.some((m) => m.body === "New request"),
-    ),
-  );
+  for (const id of [a.id, b.id]) {
+    assert.ok(
+      seen
+        .find((x) => x.you.id === id)
+        .incoming_requests.some((m) => m.body === "New request"),
+    );
+  }
   assert.equal(h.requests[0].status, "delivered");
   assert.equal(h.run.status, "completed");
   s.db.close();

@@ -6,13 +6,15 @@ import {
   existsSync,
   rmSync,
   lstatSync,
+  cpSync,
 } from "node:fs";
 import { join, resolve, isAbsolute, sep } from "node:path";
-import { randomUUID } from "node:crypto";
-import { Store, AppError } from "./store.js";
+import { randomUUID, randomBytes } from "node:crypto";
+import { Store, AppError, hash } from "./store.js";
 import { safeDirectory } from "./project-folder.js";
 import { Workspace } from "./workspace.js";
 import { PythonSandbox } from "./sandbox.js";
+import { ModelRegistry } from "./models.js";
 import { Harness } from "./harness.js";
 
 export function defaultAgentPrompt(name, summary = "") {
@@ -30,6 +32,7 @@ export class Projects {
     this.open = new Map();
     mkdirSync(directory, { recursive: true });
     this.db = new DatabaseSync(join(directory, "catalog.sqlite"));
+    this.models = new ModelRegistry(this.db);
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,name TEXT NOT NULL,summary TEXT NOT NULL,created_at TEXT NOT NULL)",
     );
@@ -119,11 +122,146 @@ export class Projects {
         workspace,
         sandbox,
       });
+      harness.modelRegistry = this.models;
       this.open.set(id, { project, store, harness, workspace, sandbox });
       if (harness.requests.some((r) => r.status === "queued"))
         harness.scheduleRequests();
     }
     return this.open.get(id);
+  }
+  duplicate(sourceId, { name, mode } = {}) {
+    if (!["setup", "full"].includes(mode))
+      throw new AppError("Choose setup only or full copy");
+    if (typeof name !== "string" || !name.trim())
+      throw new AppError("Project name is required");
+    const source = this.get(sourceId);
+    if (
+      mode === "full" &&
+      (source.harness.run?.status === "running" ||
+        (source.harness.run?.controller && !source.harness.run.ended_at) ||
+        source.sandbox.busy ||
+        source.workspace.locked ||
+        source.harness.requests.some((r) => r.status === "queued"))
+    )
+      throw new AppError(
+        "Stop the source project and wait for its executions and queued requests before making a full copy",
+        409,
+      );
+
+    const id = randomUUID();
+    const root = resolve(this.directory, "workspaces", id);
+    const gitDir = resolve(this.directory, "git", id + ".git");
+    const database = join(this.directory, id + ".sqlite");
+    const cache = resolve(this.directory, "uv-cache", id);
+    let target;
+    try {
+      if (mode === "full") {
+        source.workspace.sync();
+        // A SQLite snapshot includes committed WAL data; copying the .sqlite
+        // file alone would lose recent messages and artifacts.
+        source.store.db.prepare("VACUUM INTO ?").run(database);
+        cpSync(safeDirectory(source.workspace.root), root, {
+          recursive: true,
+          verbatimSymlinks: true,
+          filter: (path) => path !== join(source.workspace.root, ".git"),
+        });
+        cpSync(safeDirectory(source.workspace.folder.gitDir), gitDir, {
+          recursive: true,
+          verbatimSymlinks: true,
+        });
+        const sourceCache = resolve(this.directory, "uv-cache", sourceId);
+        if (existsSync(sourceCache))
+          cpSync(safeDirectory(sourceCache), cache, {
+            recursive: true,
+            verbatimSymlinks: true,
+          });
+      }
+      target = new Store(database);
+      if (mode === "setup") {
+        for (const plugin of source.store.all(
+          "SELECT manifest,credential FROM plugins",
+        ))
+          target.savePlugin(JSON.parse(plugin.manifest), plugin.credential);
+        for (const agent of source.store.agents())
+          target.createAgent(agent.name, agent.prompt, agent.tools);
+        const workspace = new Workspace(target, { root, gitDir });
+        workspace.configureEnvironment(source.workspace.environment());
+        target.saveRuntime({
+          settings: source.harness.settings,
+          model_id: source.harness.modelId,
+          run: null,
+          history: [],
+          requests: [],
+          context_usage: {},
+        });
+      } else {
+        // IDs remain project-scoped so historical references stay valid, but
+        // source bearer tokens must never authenticate against the new copy.
+        for (const agent of target.agents())
+          target.run(
+            "UPDATE agents SET token_hash=?,status='idle',error=NULL WHERE id=?",
+            hash(randomBytes(32).toString("hex")),
+            agent.id,
+          );
+        const runtime = source.harness.state();
+        target.saveRuntime({
+          ...runtime,
+          run: runtime.run
+            ? {
+                ...runtime.run,
+                status: "stopped",
+                ended_at: new Date().toISOString(),
+              }
+            : null,
+          requests: runtime.requests.map((r) =>
+            r.status === "queued"
+              ? {
+                  ...r,
+                  status: "cancelled",
+                  error: "Project duplicated; start work explicitly",
+                }
+              : r,
+          ),
+          context_usage: {},
+        });
+        // Rewrites .git and core.worktree to the new, independent locations.
+        new Workspace(target, { root, gitDir });
+      }
+      target.db.close();
+      target = null;
+      this.db
+        .prepare(
+          "INSERT INTO projects(id,name,summary,created_at,workspace_path) VALUES(?,?,?,?,?)",
+        )
+        .run(
+          id,
+          name.trim(),
+          source.project.summary,
+          new Date().toISOString(),
+          root,
+        );
+      const result = this.describe(id);
+      this.notify();
+      return result;
+    } catch (error) {
+      target?.db.close();
+      const opened = this.open.get(id);
+      if (opened) {
+        opened.store.db.close();
+        this.open.delete(id);
+      }
+      this.db.prepare("DELETE FROM projects WHERE id=?").run(id);
+      for (const path of [
+        root,
+        gitDir,
+        cache,
+        database,
+        database + "-wal",
+        database + "-shm",
+      ])
+        rmSync(path, { recursive: true, force: true });
+      throw error;
+    }
   }
   delete(id, { confirm_name, delete_artifacts = false } = {}) {
     const project = this.db

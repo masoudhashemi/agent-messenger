@@ -105,8 +105,9 @@ test("HTTP plugin execution validates arguments, pins endpoint, formats GET/POST
     },
   );
   const large = await post.execute({}, { arguments: weatherPlugin.example });
-  assert.equal(large.truncated, true);
-  assert.ok(JSON.stringify(large).length < 12000);
+  assert.equal(large.data.large, "x".repeat(20000));
+  assert.equal(large.truncated, undefined);
+  assert.equal(large.provider_response.large, "x".repeat(20000));
   await assert.rejects(
     httpPluginTool({ ...manifest, enabled: false }, () => "key").execute(
       {},

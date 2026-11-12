@@ -1,9 +1,12 @@
-# OpenAI-compatible chat completions endpoint with JSON-schema output support.
+# OpenAI-compatible chat completions endpoint; choose a supported output mode.
 [model]
-name = "gemma-4-31B-it"
+name = "your-served-model-name"
 api_base = "http://localhost:8000/v1"
-api_key_env = "TOOLKIT_TOKEN"
+api_key_env = "MODEL_API_KEY"
 temperature = 0
 max_tokens = 4096
 context_window_tokens = 65536
 timeout_seconds = 120
+
+output_mode = "json_schema"
+token_parameter = "max_tokens"

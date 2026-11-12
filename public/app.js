@@ -4,7 +4,7 @@ import { lineDiff } from "/diff.js";
 import { renderMessage, preview, renderDiffPreview } from "/format.js";
 const projectId = new URLSearchParams(location.search).get("project");
 let state = { agents: [], chats: [], history: [] },
-  selected = null,
+  selected = new URLSearchParams(location.search).get("chat"),
   filter = "all",
   query = "",
   drafts = {};
@@ -68,7 +68,7 @@ async function refresh() {
       return;
     }
     state = await api("state");
-    if (!selected && state.chats.length)
+    if (!state.chats.some((c) => c.id === selected) && state.chats.length)
       selected =
         state.chats.find((c) => c.kind === "group")?.id || state.chats[0].id;
     render();
@@ -79,7 +79,27 @@ async function refresh() {
 }
 function renderHome(projects) {
   $("#app").innerHTML =
-    `<div class="project-home"><header class="home-nav"><span class="home-brand">r.</span><span>RELAY <small>/ AGENT WORKSPACES</small></span><span class="home-local"><i class="dot"></i>Local workspace</span></header><main class="home-content"><div class="home-heading"><div><div class="eyebrow">Your agent workspaces</div><h1>Ideas in motion.</h1><p>Pick up where your agents left off, or give them something new to explore.</p></div><button class="primary" id="new-project">＋ New project</button></div><div class="section-head"><h2>All projects <small>${projects.length}</small></h2><span class="muted">Separate teams. Persistent conversations.</span></div><div class="project-grid">${projects.map((p) => `<article class="project-card"><div class="heading"><div class="avatar">${esc(initials(p.name))}</div><span class="state ${p.run?.status === "running" ? "running" : ""}">${esc(p.run?.status?.replaceAll("_", " ") || "Ready to start")}</span></div><h2>${esc(p.name)}</h2><p class="project-summary">${esc(p.summary || "A fresh workspace for your agents.")}</p><p class="project-path" title="${esc(p.workspace_path || "")}">${esc(p.workspace_path || "")}</p><div class="project-counts"><span><strong>${p.agents}</strong> agents</span><span><strong>${p.chats}</strong> threads</span><span><strong>${p.messages}</strong> messages</span></div><p class="muted">${p.run ? `Last objective: ${esc(p.run.task.slice(0, 140))}` : "No runs yet. Add agents and set an objective."}</p><div class="project-card-footer"><button class="quiet delete-project" data-delete-project="${p.id}" aria-label="Delete ${esc(p.name)}">Delete</button><a class="review-link" href="/?project=${p.id}">Review ↗</a><button class="${p.run?.task ? "primary" : ""}" data-resume="${p.id}">${p.run?.status === "running" ? "Open live" : p.run?.task ? "Resume" : "Open project"} →</button></div></article>`).join("") || '<div class="home-empty"><div class="avatar">＋</div><h2>Your next project starts here.</h2><p>Create a project, add agents, and let conversations grow as they work.</p></div>'}</div><p class="home-footnote">Each project has its own agents, private notes, and conversation history. New projects start empty.</p></main></div>`;
+    `<div class="project-home"><header class="home-nav"><span class="home-brand">r.</span><span>RELAY <small>/ AGENT WORKSPACES</small></span><span class="home-local"><i class="dot"></i>Local workspace</span></header><main class="home-content"><div class="home-heading"><div><div class="eyebrow">Your agent workspaces</div><h1>Ideas in motion.</h1><p>Pick up where your agents left off, or give them something new to explore.</p></div><button class="primary" id="new-project">＋ New project</button></div><div class="section-head"><h2>All projects <small>${projects.length}</small></h2><span class="muted">Separate teams. Persistent conversations.</span></div><div class="project-grid">${projects.map((p) => `<article class="project-card"><div class="heading"><div class="avatar">${esc(initials(p.name))}</div><span class="state ${p.run?.status === "running" ? "running" : ""}">${esc(p.run?.status?.replaceAll("_", " ") || "Ready to start")}</span></div><h2>${esc(p.name)}</h2><p class="project-summary">${esc(p.summary || "A fresh workspace for your agents.")}</p><p class="project-path" title="${esc(p.workspace_path || "")}">${esc(p.workspace_path || "")}</p><div class="project-counts"><span><strong>${p.agents}</strong> agents</span><span><strong>${p.chats}</strong> threads</span><span><strong>${p.messages}</strong> messages</span></div><p class="muted">${p.run ? `Last objective: ${esc(p.run.task.slice(0, 140))}` : "No runs yet. Add agents and set an objective."}</p><div class="project-card-footer"><button class="quiet" data-duplicate-project="${p.id}">Duplicate</button><button class="quiet delete-project" data-delete-project="${p.id}" aria-label="Delete ${esc(p.name)}">Delete</button><a class="review-link" href="/?project=${p.id}">Review ↗</a><button class="${p.run?.task ? "primary" : ""}" data-resume="${p.id}">${p.run?.status === "running" ? "Open live" : p.run?.task ? "Resume" : "Open project"} →</button></div></article>`).join("") || '<div class="home-empty"><div class="avatar">＋</div><h2>Your next project starts here.</h2><p>Create a project, add agents, and let conversations grow as they work.</p></div>'}</div><p class="home-footnote">Each project has its own agents, private notes, and conversation history. New projects start empty.</p></main></div>`;
+  document.querySelectorAll("[data-duplicate-project]").forEach((button) => {
+    button.onclick = () => {
+      const project = projects.find(
+        (p) => p.id === button.dataset.duplicateProject,
+      );
+      modal(
+        `<h2>Duplicate ${esc(project.name)}</h2><label>New project name</label><input name="name" required value="${esc(project.name + " (copy)")}"><label>What to copy</label><select name="mode"><option value="setup">Setup only</option><option value="full">Full copy</option></select><p><strong>Setup only:</strong> Agent prompts, tool assignments, plugins, and project settings. Starts with empty chats and files.</p><p><strong>Full copy:</strong> Also includes chats, saved outputs, files, Python environment, and Git history. Stop the source project before copying.</p><p class="muted">Both options copy plugin credentials and create independent storage with all agents stopped. Nothing runs until you start it.</p>`,
+        async (form, dialog) => {
+          const copy = await api(
+            "projects/duplicate",
+            { id: project.id, name: form.get("name"), mode: form.get("mode") },
+            null,
+          );
+          dialog.close();
+          location.href = "/?project=" + copy.id;
+        },
+      );
+      $("#modal-form button.primary").textContent = "Duplicate project";
+    };
+  });
   document.querySelectorAll("[data-delete-project]").forEach((button) => {
     button.onclick = () => {
       const project = projects.find(
@@ -135,6 +155,7 @@ function renderHome(projects) {
                   ids: current.agents.map((a) => a.id),
                   task: p.run.task,
                   maxTurns: p.run.maxTurns,
+                  required_files: p.run.required_files || [],
                 },
                 p.id,
               );
@@ -166,12 +187,152 @@ function deliveryStatus(message, chat) {
 }
 const icon = (c) =>
   c.kind === "group" ? "#" : c.kind === "self" ? "↳" : initials(c.name);
+function groupCard(chat) {
+  if (chat.kind !== "group" || !chat.group) return "";
+  const g = chat.group;
+  return `<section class="group-contract"><div class="heading"><strong>${esc(g.status.replaceAll("_", " "))}</strong><span>Owner: ${esc(name(g.owner_id))}</span></div><p>${esc(g.purpose)}</p>${g.completion_criteria ? `<p class="muted">Done when: ${esc(g.completion_criteria)}</p>` : ""}${g.deliverables.length ? `<p>Deliverables: ${g.deliverables.map(esc).join(", ")}</p>` : ""}${g.blockers.length ? `<p class="error-text">Blocked: ${g.blockers.map(esc).join("; ")}</p>` : ""}<div class="actions"><button class="quiet" id="manage-group">Manage group</button><button class="quiet" id="group-decisions">Decisions (${g.decision_count})</button><button class="quiet" id="group-history">History</button>${g.final_message_id ? `<button class="quiet" id="group-final" data-message-id="${g.final_message_id}">Final report ↗</button>` : ""}</div></section>`;
+}
+function manageGroup(chat) {
+  const g = chat.group;
+  modal(
+    `<h2>Group workspace</h2><label>Purpose</label><textarea name="purpose" required>${esc(g.purpose)}</textarea><label>Owner</label><select name="owner_id">${chat.members.map((id) => `<option value="${id}" ${id === g.owner_id ? "selected" : ""}>${esc(name(id))}</option>`).join("")}</select><label>Status</label><select name="status">${["active", "awaiting_input", "blocked", "resolved"].map((status) => `<option value="${status}" ${status === g.status ? "selected" : ""}>${status.replaceAll("_", " ")}</option>`).join("")}</select><label>Member roles</label>${chat.members.map((id) => `<label>${esc(name(id))}</label><input name="role:${id}" value="${esc(g.roles[id] || "")}">`).join("")}<label>Deliverable file paths (one per line)</label><textarea name="deliverables">${esc(g.deliverables.join("\n"))}</textarea><label>Completion criteria</label><textarea name="completion_criteria">${esc(g.completion_criteria)}</textarea><label>Blockers (one per line)</label><textarea name="blockers">${esc(g.blockers.join("\n"))}</textarea><label>Final report message ID</label><input name="final_message_id" type="number" min="1" value="${g.final_message_id || ""}"><p class="muted">Resolving requires a report in this group, existing deliverables, and no pending decisions or blockers. Criteria express the owner's judgment; they are not automatically fact-checked.</p>`,
+    async (form, dialog) => {
+      const lines = (key) =>
+        String(form.get(key))
+          .split("\n")
+          .map((v) => v.trim())
+          .filter(Boolean);
+      await api("group-settings", {
+        chat_id: chat.id,
+        purpose: form.get("purpose"),
+        owner_id: form.get("owner_id"),
+        status: form.get("status"),
+        roles: Object.fromEntries(
+          chat.members.map((id) => [id, form.get("role:" + id)]),
+        ),
+        deliverables: lines("deliverables"),
+        blockers: lines("blockers"),
+        completion_criteria: form.get("completion_criteria"),
+        final_message_id: form.get("final_message_id")
+          ? Number(form.get("final_message_id"))
+          : null,
+      });
+      dialog.close();
+      await refresh();
+    },
+  );
+}
+async function groupDecisions(chat, offset = 0) {
+  const detail = await api(
+    "group?chat_id=" + encodeURIComponent(chat.id) + "&offset=" + offset,
+  );
+  modal(
+    `<h2>Decisions · ${esc(chat.name)}</h2><div class="decision-list">${detail.decisions.results.map((d) => `<article class="decision-item"><strong>${esc(d.title)}</strong><p>${esc(d.status)} · ${esc(name(d.author))}</p><p>${esc(d.rationale)}</p><p class="muted">Evidence: ${d.evidence.map((ref) => (typeof ref === "number" ? "Message #" + ref : esc(ref))).join(" · ") || "None yet"}</p><div class="actions"><button type="button" data-decision="${d.id}" data-status="accepted">Accept</button><button type="button" data-decision="${d.id}" data-status="rejected">Reject</button><button type="button" data-decision="${d.id}" data-status="proposed">Reopen proposal</button></div></article>`).join("") || '<p class="muted">No decisions recorded.</p>'}</div><div class="actions">${offset ? '<button type="button" id="first-decisions">First page</button>' : ""}${detail.decisions.next_offset !== null ? '<button type="button" id="next-decisions">Next page</button>' : ""}</div><h3>Record a decision</h3><label>Title</label><input name="title" required><label>Rationale / alternatives considered</label><textarea name="rationale" required></textarea><label>Evidence (one URL or group message ID per line)</label><textarea name="evidence"></textarea><label>Status</label><select name="status"><option value="proposed">Proposed</option><option value="accepted">Accepted</option><option value="rejected">Rejected</option></select>`,
+    async (form, dialog) => {
+      await api("group-decision", {
+        chat_id: chat.id,
+        title: form.get("title"),
+        rationale: form.get("rationale"),
+        status: form.get("status"),
+        evidence: String(form.get("evidence"))
+          .split("\n")
+          .map((v) => v.trim())
+          .filter(Boolean)
+          .map((v) => (/^\d+$/.test(v) ? Number(v) : v)),
+      });
+      dialog.close();
+      await refresh();
+    },
+  );
+  document.querySelectorAll("[data-decision]").forEach((button) => {
+    button.onclick = () =>
+      act(async () => {
+        await api("group-decision", {
+          chat_id: chat.id,
+          decision_id: button.dataset.decision,
+          status: button.dataset.status,
+        });
+        $("#modal").close();
+        await refresh();
+        await groupDecisions(
+          state.chats.find((c) => c.id === chat.id),
+          offset,
+        );
+      });
+  });
+  if ($("#next-decisions"))
+    $("#next-decisions").onclick = () =>
+      act(async () => {
+        $("#modal").close();
+        await groupDecisions(chat, detail.decisions.next_offset);
+      });
+  if ($("#first-decisions"))
+    $("#first-decisions").onclick = () =>
+      act(async () => {
+        $("#modal").close();
+        await groupDecisions(chat, 0);
+      });
+}
+async function groupHistory(chat, offset = 0) {
+  const detail = await api(
+    "group?view=history&chat_id=" +
+      encodeURIComponent(chat.id) +
+      "&offset=" +
+      offset,
+  );
+  modal(
+    `<h2>Group history</h2>${detail.history.results.map((event) => `<details><summary>${esc(event.event.replaceAll("_", " "))} · ${esc(name(event.actor))} · ${esc(event.created_at)}</summary><pre class="plugin-output">${esc(JSON.stringify(event.data, null, 2))}</pre></details>`).join("") || "No changes recorded."}${detail.history.next_offset !== null ? '<button type="button" id="more-group-history">Older changes</button>' : ""}`,
+    async (_, dialog) => dialog.close(),
+  );
+  $("#modal-form button.primary").textContent = "Close";
+  if ($("#more-group-history"))
+    $("#more-group-history").onclick = () =>
+      act(async () => {
+        $("#modal").close();
+        await groupHistory(chat, detail.history.next_offset);
+      });
+}
+function liveActivities(chatId) {
+  if (state.run?.status !== "running") return [];
+  return Object.values(state.activity || {}).filter(
+    (a) =>
+      a.run_id === state.run.id &&
+      (chatId === undefined || a.chat_id === chatId),
+  );
+}
+function activityLabel(a) {
+  return a.phase === "preparing"
+    ? "Waiting for model"
+    : a.phase === "writing_note"
+      ? "Writing a working note"
+      : a.phase === "sending"
+        ? "Sending a message"
+        : a.phase === "reading"
+          ? "Reading" + (a.tool ? " · " + a.tool.replaceAll("_", " ") : "")
+          : "Working" + (a.tool ? " · " + a.tool.replaceAll("_", " ") : "");
+}
+function chatActivity(chatId, compact = false) {
+  const activities = liveActivities(chatId);
+  if (!activities.length) return "";
+  const waiting = activities.some((a) => a.phase === "preparing");
+  return `<div class="chat-activity ${compact ? "compact" : ""}" ${compact ? "" : 'role="status" aria-live="polite"'}><span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>${activities.map((a) => `${esc(name(a.agent_id))} · ${esc(activityLabel(a))}`).join("<br>")}${!compact && waiting ? "<br><small>This chat is being used as context. The response may go to another chat.</small>" : ""}</span></div>`;
+}
+function agentActivity(agentId) {
+  const a = liveActivities().find((a) => a.agent_id === agentId);
+  if (!a) return "";
+  const chat = state.chats.find((c) => c.id === a.chat_id);
+  return chat
+    ? `<button class="quiet agent-chat-activity" data-activity-chat="${esc(chat.id)}">${esc(activityLabel(a))} in ${esc(chat.name)} ↗</button>`
+    : '<div class="agent-chat-activity">Preparing first working note…</div>';
+}
 function render() {
   const openAudits = [
     ...document.querySelectorAll("details[data-audit][open]"),
   ].map((el) => el.dataset.audit);
   const focus = document.activeElement?.id,
-    sel = document.activeElement?.selectionStart;
+    sel = document.activeElement?.selectionStart,
+    selectionEnd = document.activeElement?.selectionEnd,
+    selectionDirection = document.activeElement?.selectionDirection;
   const oldScroll = $(".messages"),
     atBottom =
       !oldScroll ||
@@ -182,6 +343,10 @@ function render() {
     inspectorScroll = $(".inspector")?.scrollTop || 0;
   const task = $("#task")?.value,
     turns = $("#turns")?.value,
+    maxNewAgents =
+      focus === "max-new-agents"
+        ? ($("#max-new-agents")?.value ?? state.settings?.max_new_agents ?? 3)
+        : (state.settings?.max_new_agents ?? 3),
     defaultTask =
       state.run?.task || state.project?.summary || state.project?.name || "",
     taskValue =
@@ -191,7 +356,7 @@ function render() {
   const c = state.chats.find((c) => c.id === selected),
     running = state.run?.status === "running";
   $("#app").innerHTML =
-    `<div class="layout"><nav class="rail"><div class="brand">r.</div><div class="rail-icon">☷</div><div title="Private agent workspace">◈</div><div class="rail-bottom">RELAY / WORKSPACE</div></nav><aside class="sidebar"><div class="sidebar-top"><div class="heading"><h1>Conversations</h1><button class="quiet" id="new-chat" title="New conversation">＋</button></div><p class="subtitle"><a href="/">← Projects</a> / ${esc(state.project?.name || "Workspace")}</p><button class="quiet" id="sidebar-add-agent">＋ Add agent</button><input id="search" class="search" placeholder="Search conversations…" value="${esc(query)}"><div class="tabs">${[
+    `<div class="layout"><nav class="rail"><div class="brand">r.</div><div class="rail-icon">☷</div><div title="Private agent workspace">◈</div><div class="rail-bottom">RELAY / WORKSPACE</div></nav><aside class="sidebar"><div class="sidebar-top"><div class="heading"><h1>Conversations</h1><button class="quiet" id="new-chat" title="New conversation">＋</button></div><p class="subtitle"><a href="/">← Projects</a> / ${esc(state.project?.name || "Workspace")}</p><button class="quiet" id="sidebar-add-agent">＋ Add agent</button><button class="quiet model-shortcut" id="manage-models"><strong>Change model</strong><span>${esc(state.model?.label || state.model?.name || "Configure model")}</span></button><input id="search" class="search" placeholder="Search conversations…" value="${esc(query)}"><div class="tabs">${[
       ["all", "All"],
       ["group", "Groups"],
       ["direct", "Direct"],
@@ -212,11 +377,11 @@ function render() {
         )
         .map(
           (c) =>
-            `<button class="chat-row ${selected === c.id ? "selected" : ""}" data-chat="${c.id}"><div class="avatar ${c.kind}">${esc(icon(c))}</div><div class="row-copy"><div class="row-title"><span>${esc(c.name)}</span>${c.kind === "self" ? `<span class="chat-owner" title="${esc(name(c.members[0]))}">${esc(name(c.members[0]))}</span>` : ""}</div><div class="row-preview">${esc(preview(c.messages.at(-1)?.body || c.summary || "No messages yet"))}</div><div class="row-preview">${c.kind === "self" ? `${esc(name(c.members[0]))} · Personal workspace` : c.members.length + " members"} · ${c.messages.length} messages</div></div></button>`,
+            `<button class="chat-row ${selected === c.id ? "selected" : ""} ${liveActivities(c.id).length ? "chat-active" : ""}" data-chat="${c.id}"><div class="avatar ${c.kind}">${esc(icon(c))}</div><div class="row-copy"><div class="row-title"><span>${esc(c.name)}</span>${c.kind === "self" ? `<span class="chat-owner" title="${esc(name(c.members[0]))}">${esc(name(c.members[0]))}</span>` : ""}</div>${chatActivity(c.id, true) || `<div class="row-preview">${esc(preview(c.messages.at(-1)?.body || c.summary || "No messages yet"))}</div>`}<div class="row-preview">${c.kind === "self" ? `${esc(name(c.members[0]))} · Personal workspace` : c.members.length + " members"} · ${c.messages.length} messages</div></div></button>`,
         )
         .join("") ||
       '<p class="muted" style="padding:12px">Your conversations will appear here.</p>'
-    }</div><div class="sidebar-foot"><button id="manage-plugins" class="quiet">⊞ Tools & plugins</button><button id="search-knowledge" class="quiet" title="Search accessible messages, source and executions">⌕ Search</button><button id="code-workspace" class="quiet">⌘ Code workspace <small>${state.coding?.files.length || 0}</small></button></div></aside><main class="main">${c ? `<header class="chat-head"><div class="avatar ${c.kind}">${esc(icon(c))}</div><div><h2>${esc(c.name)}</h2><p>${esc(c.members.map(name).join(", "))}</p></div><span class="badge">${c.kind === "self" ? `${esc(name(c.members[0]))} · Private self-thread` : c.kind === "direct" ? "Private conversation" : "Members only"}</span><button class="quiet" id="edit-chat" title="Edit conversation">⋯</button></header><div class="messages"><div class="date">${esc(c.summary || "This is the beginning of this conversation.")}</div>${c.messages.map((m) => `<article class="message ${!m.sender_id ? "operator" : ""}"><div class="avatar">${esc(initials(name(m.sender_id)))}</div><div class="message-content"><div class="message-meta">${esc(name(m.sender_id))}<time>${time(m.created_at)}</time></div><div class="bubble">${renderMessage(m.body, state.chats, m.id)}</div>${deliveryStatus(m, c)}</div></article>`).join("") || '<div class="empty"><div class="avatar">↗</div><h2>Space to think together.</h2><p>Send a request here. The agents in this conversation will start automatically.</p></div>'}</div><form class="composer" id="compose"><div class="compose-box"><textarea id="message" rows="1" placeholder="Message as operator…">${esc(drafts[c.id] || "")}</textarea><button class="primary" title="Send message">↑</button></div><div class="composer-note">Sending wakes ${c.kind === "self" ? "this agent only" : "the conversation members"} · Ctrl/⌘ + Enter to send</div></form>` : `<div class="empty"><div class="avatar">r.</div><h2>${state.agents.length ? esc(state.project?.name || "Your team is ready.") : "Give your agents a place to talk."}</h2><p>${state.agents.length ? esc(state.project?.summary || "Your Lead agent is configured and ready. Run the team to start working notes and conversations, or add more teammates.") : "Add agents with system prompts, set an objective, and run the team. Conversations appear as agents create them; every turn starts with private working notes."}</p><div class="actions">${state.agents.length ? `<button class="primary" id="welcome-run">${running ? "■ Stop run" : "▶ Run team"}</button>` : ""}<button class="quiet" id="welcome-agent">${state.agents.length ? "＋ Add an agent" : "Create your first agent"}</button></div></div>`}</main><aside class="inspector"><section class="section"><div class="section-head"><h2>Workspace agents <small>${state.agents.length}</small></h2><button id="new-agent">＋ Add</button></div>${state.agents.map((a) => `<div class="agent"><div class="avatar">${esc(initials(a.name))}</div><div><div class="agent-name">${esc(a.name)} <button class="quiet" data-agent-tools="${a.id}" aria-label="Tools for ${esc(a.name)}">Edit / Tools${a.tools?.length ? ` · ${a.tools.length}` : ""}</button></div><div class="agent-role" data-agent-tools="${a.id}" title="Click to view or edit system prompt">${esc(a.prompt.slice(0, 48))}${a.prompt.length > 48 ? "…" : ""}</div>${a.error ? `<div class="error-text">${esc(a.error)}</div>` : ""}</div><span class="state ${a.status}">${a.status}</span></div>`).join("") || '<p class="muted">Build a team of specialized agents.</p>'}</section><section class="section run-box"><div class="heading"><h2>Agent harness</h2><span class="eyebrow">Gemma</span></div><p class="muted">Set a shared objective. Agents choose where to talk.</p><textarea id="task" placeholder="What should the team work on?">${esc(taskValue)}</textarea><div class="agent-creation-settings"><label><input type="checkbox" id="allow-agent-creation" ${state.settings?.allow_agent_creation ? "checked" : ""}> Allow agents to create teammates</label><label>New agents per run <input type="number" id="max-new-agents" min="1" max="10" value="${state.settings?.max_new_agents || 3}"></label><small class="muted">Shares this run’s turn budget. New teammates inherit their creator’s tools. Private chats stay private.</small></div><div class="run-controls"><input id="turns" type="number" min="1" max="100" value="${esc(turns || 12)}" aria-label="Maximum turns"><button class="primary" id="run" ${!state.agents.length ? "disabled" : ""}>${running ? "■ Stop run" : "▶ Run team"}</button></div><p class="muted">${state.run ? `${esc(state.run.status.replaceAll("_", " "))} · ${state.run.turns}/${state.run.maxTurns} turns` : "Bounded turns · All workspace agents"}</p><p class="muted">Selective context · ${
+    }</div><div class="sidebar-foot"><button id="manage-plugins" class="quiet">⊞ Tools & plugins</button><button id="search-knowledge" class="quiet" title="Search accessible messages, source and executions">⌕ Search</button><button id="code-workspace" class="quiet">⌘ Code workspace <small>${state.coding?.files.length || 0}</small></button></div></aside><main class="main">${c ? `<header class="chat-head"><div class="avatar ${c.kind}">${esc(icon(c))}</div><div><h2>${esc(c.name)}</h2><p>${esc(c.members.map(name).join(", "))}</p></div><span class="badge">${c.kind === "self" ? `${esc(name(c.members[0]))} · Private self-thread` : c.kind === "direct" ? "Private conversation" : "Members only"}</span><button class="quiet" id="edit-chat" title="Edit conversation">⋯</button></header><div class="messages">${groupCard(c)}<div class="date">${esc(c.summary || "This is the beginning of this conversation.")}</div>${c.messages.map((m) => `<article id="message-${m.id}" class="message ${!m.sender_id ? "operator" : ""}"><div class="avatar">${esc(initials(name(m.sender_id)))}</div><div class="message-content"><div class="message-meta">${esc(name(m.sender_id))}<time>${time(m.created_at)}</time></div><div class="bubble">${renderMessage(m.body, state.chats, m.id)}</div>${deliveryStatus(m, c)}</div></article>`).join("") || '<div class="empty"><div class="avatar">↗</div><h2>Space to think together.</h2><p>Send a request here. The agents in this conversation will start automatically.</p></div>'}${chatActivity(c.id)}</div><form class="composer" id="compose"><div class="compose-box"><textarea id="message" rows="1" placeholder="Message as operator…">${esc(drafts[c.id] || "")}</textarea><button class="primary" title="Send message">↑</button></div><div class="composer-note">Sending wakes ${c.kind === "self" ? "this agent only" : "the conversation members"} · Ctrl/⌘ + Enter to send</div></form>` : `<div class="empty"><div class="avatar">r.</div><h2>${state.agents.length ? esc(state.project?.name || "Your team is ready.") : "Give your agents a place to talk."}</h2><p>${state.agents.length ? esc(state.project?.summary || "Your Lead agent is configured and ready. Run the team to start working notes and conversations, or add more teammates.") : "Add agents with system prompts, set an objective, and run the team. Conversations appear as agents create them; every turn starts with private working notes."}</p><div class="actions">${state.agents.length ? `<button class="primary" id="welcome-run">${running ? "■ Stop run" : "▶ Run team"}</button>` : ""}<button class="quiet" id="welcome-agent">${state.agents.length ? "＋ Add an agent" : "Create your first agent"}</button></div></div>`}</main><aside class="inspector"><section class="section"><div class="section-head"><h2>Workspace agents <small>${state.agents.length}</small></h2><button id="new-agent">＋ Add</button></div>${state.agents.map((a) => `<div class="agent"><div class="avatar">${esc(initials(a.name))}</div><div><div class="agent-name">${esc(a.name)} <button class="quiet" data-agent-tools="${a.id}" aria-label="Tools for ${esc(a.name)}">Edit / Tools${a.tools?.length ? ` · ${a.tools.length}` : ""}</button></div><div class="agent-role" data-agent-tools="${a.id}" title="Click to view or edit system prompt">${esc(a.prompt.slice(0, 48))}${a.prompt.length > 48 ? "…" : ""}</div>${agentActivity(a.id)}${a.error ? `<div class="error-text">${esc(a.error)}</div>` : ""}</div><span class="state ${a.status}">${a.status}</span></div>`).join("") || '<p class="muted">Build a team of specialized agents.</p>'}</section><section class="section run-box"><div class="heading"><h2>Agent harness</h2><button id="harness-models" class="quiet">Models · ${esc((running && (state.run?.model?.label || state.run?.model?.name)) || state.model?.label || state.model?.name || "Configure")}</button></div><p class="muted">Set a shared objective. Agents choose where to talk.</p><textarea id="task" placeholder="What should the team work on?">${esc(taskValue)}</textarea><label for="required-files">Required output files (one path per line)</label><textarea id="required-files" rows="2" placeholder="reports/findings.md">${esc($("#required-files")?.value ?? (state.run?.required_files || []).join("\n"))}</textarea><div class="agent-creation-settings"><label><input type="checkbox" id="allow-agent-creation" ${state.settings?.allow_agent_creation ? "checked" : ""}> Allow agents to create teammates</label><label>New agents per run <input type="number" id="max-new-agents" min="1" max="10" value="${esc(maxNewAgents)}"></label><small class="muted">Shares this run’s turn budget. New teammates inherit their creator’s tools. Private chats stay private.</small></div><div class="run-controls"><input id="turns" type="number" min="1" max="100" value="${esc(turns ?? 12)}" aria-label="Maximum turns"><button class="primary" id="run" ${!state.agents.length ? "disabled" : ""}>${running ? "■ Stop run" : "▶ Run team"}</button></div><p class="muted">${state.run ? `${esc(state.run.status.replaceAll("_", " "))} · ${state.run.turns}/${state.run.maxTurns} turns` : "Bounded turns · All workspace agents"}</p><p class="muted">Completion checks: ${esc(state.run?.completion?.status?.replaceAll("_", " ") || "Pending")} · checks delivery, declared files, and source access; not factual correctness.</p><p class="muted">Selective context · ${
       Object.entries(state.context_usage || {})
         .map(
           ([id, u]) =>
@@ -233,6 +398,16 @@ function render() {
         .join("") ||
       '<p class="muted">Agent actions will appear here as they work.</p>'
     }</section><div class="privacy">◈ &nbsp; You are the operator.<br>You can monitor every thread. Agents can access only conversations they belong to.</div></aside></div>`;
+  $("#manage-models").onclick = () => act(modelsModal);
+  $("#harness-models").onclick = () => act(modelsModal);
+  document.querySelectorAll("[data-activity-chat]").forEach((button) => {
+    button.onclick = () => {
+      selected = button.dataset.activityChat;
+      filter = "all";
+      query = "";
+      render();
+    };
+  });
   document.querySelectorAll("details[data-audit]").forEach((el) => {
     el.open = openAudits.includes(el.dataset.audit);
   });
@@ -243,8 +418,13 @@ function render() {
   if (focus && document.getElementById(focus)) {
     const el = document.getElementById(focus);
     el.focus({ preventScroll: true });
-    if (typeof el.setSelectionRange === "function" && el.type !== "number")
-      el.setSelectionRange(sel, sel);
+    // Inputs such as checkboxes expose this method but do not support selection.
+    if (
+      typeof sel === "number" &&
+      typeof el.selectionStart === "number" &&
+      typeof el.setSelectionRange === "function"
+    )
+      el.setSelectionRange(sel, selectionEnd, selectionDirection);
   }
   document.querySelectorAll("[data-respond]").forEach(
     (b) =>
@@ -296,6 +476,24 @@ function render() {
   $("#search-knowledge").onclick = openKnowledge;
   $("#manage-plugins").onclick = () => act(() => plugins.open());
   if ($("#edit-chat")) $("#edit-chat").onclick = () => chatModal(c);
+  if ($("#manage-group")) $("#manage-group").onclick = () => manageGroup(c);
+  if ($("#group-history"))
+    $("#group-history").onclick = () => act(() => groupHistory(c));
+  if ($("#group-decisions"))
+    $("#group-decisions").onclick = () => act(() => groupDecisions(c));
+  if ($("#group-final"))
+    $("#group-final").onclick = () =>
+      act(async () => {
+        const detail = await api(
+          "group?view=report&chat_id=" + encodeURIComponent(c.id),
+        );
+        if (!detail.report) throw new Error("Final report is unavailable");
+        modal(
+          `<h2>Final report</h2><p class="muted">Message #${detail.report.id} · ${esc(name(detail.report.sender_id))}</p>${renderMessage(detail.report.body, state.chats, detail.report.id)}`,
+          async (_, dialog) => dialog.close(),
+        );
+        $("#modal-form button.primary").textContent = "Close";
+      });
   if ($("#message")) {
     $("#message").oninput = (e) => (drafts[c.id] = e.target.value);
     $("#message").onkeydown = (e) => {
@@ -339,6 +537,10 @@ function render() {
             state.project?.name ||
             "",
           maxTurns: Number($("#turns").value),
+          required_files: $("#required-files")
+            .value.split("\n")
+            .map((p) => p.trim())
+            .filter(Boolean),
         });
       await refresh();
     });
@@ -379,6 +581,79 @@ function modal(html, submit) {
 const plugins = pluginUI({ api, modal, refresh, toast, esc });
 function agentToolFields(enabled = []) {
   return `<h3>Tools</h3>${(state.tools || []).map((tool) => `<label class="check"><input type="checkbox" name="tools" value="${esc(tool.name)}" ${enabled.includes(tool.name) ? "checked" : ""}> ${esc(tool.label)}</label><p class="muted">${esc(tool.description)} ${esc(tool.status?.message || "")}</p>`).join("")}<p class="muted">Automatically created teammates inherit the creator’s enabled tools unless a smaller list is specified. Messaging and project tools remain available.</p>`;
+}
+async function modelsModal() {
+  const catalog = await api("models");
+  const choices = [catalog.default, ...catalog.models];
+  modal(
+    `<h2>Model connections</h2><p>Connections are shared across projects. Choose a model for this project; active runs keep their original configuration.</p><label>Project model</label><select name="model_id">${choices.map((c) => `<option value="${esc(c.id || "")}" ${(c.id || null) === (state.model_id || null) ? "selected" : ""}>${esc(c.label || c.name)}</option>`).join("")}</select><div class="actions"><button type="button" id="add-model">Add connection</button><button type="button" id="edit-model">Edit selected</button><button type="button" id="test-model">Test selected</button></div><p id="model-test-result" role="status"></p>`,
+    async (form, dialog) => {
+      await api("model", { id: form.get("model_id") || null });
+      dialog.close();
+      await refresh();
+    },
+  );
+  const chosen = () => $("#modal select[name=model_id]").value;
+  $("#add-model").onclick = () => editModelConnection();
+  $("#edit-model").onclick = () => {
+    const item = catalog.models.find((c) => c.id === chosen());
+    if (!item)
+      return toast(
+        "Edit configs/model.toml for the local default, or add a connection.",
+      );
+    editModelConnection(item);
+  };
+  $("#test-model").onclick = () =>
+    act(async () => {
+      const output = $("#model-test-result");
+      output.textContent = "Waiting for the configured endpoint…";
+      try {
+        const result = await api("models/test", { id: chosen() || null });
+        output.textContent = `Connected to ${result.model} · ${(result.elapsed_ms / 1000).toFixed(1)}s · valid JSON response`;
+      } catch (e) {
+        output.textContent = e.message;
+        throw e;
+      }
+    });
+}
+function editModelConnection(c = {}) {
+  modal(
+    `<h2>${c.id ? "Edit" : "Add"} model connection</h2>
+    <label>Display name</label><input name="label" required value="${esc(c.label || "")}" placeholder="Research model">
+    <label>API base URL</label><input name="api_base" type="url" required value="${esc(c.api_base || "")}" placeholder="https://openrouter.ai/api/v1">
+    <label>Model ID (exact provider name)</label><input name="name" required value="${esc(c.name || "")}" placeholder="provider/model or your vLLM deployment name">
+    <label>API key environment variable (optional)</label><input name="api_key_env" value="${esc(c.api_key_env || "")}" placeholder="MODEL_API_KEY">
+    <label>Or save an API key locally</label><input name="credential" type="password" autocomplete="new-password" placeholder="${c.has_credential ? "Saved key; leave blank to keep" : "Optional for endpoints without authentication"}">
+    <label><input type="checkbox" name="clear_credential"> Clear saved key</label>
+    <p class="muted">Keys are stored in local application data, never returned to agents or the browser. An environment variable in .env avoids storing a key in the database.</p>
+    <label>Response format</label><select name="output_mode">${["json_schema", "json_object", "text"].map((v) => `<option ${(c.output_mode || "json_schema") === v ? "selected" : ""} value="${v}">${{ json_schema: "JSON Schema", json_object: "JSON object", text: "Prompt-only JSON (no response_format)" }[v]}</option>`).join("")}</select>
+    <label>Output token parameter</label><select name="token_parameter">${["max_tokens", "max_completion_tokens"].map((v) => `<option ${c.token_parameter === v ? "selected" : ""}>${v}</option>`).join("")}</select>
+    <label>Output token budget</label><input type="number" name="max_tokens" min="128" max="262144" value="${c.max_tokens || 4096}" required>
+    <label>Context window tokens</label><input type="number" name="context_window_tokens" min="2048" max="2000000" value="${c.context_window_tokens || 65536}" required>
+    <label>Timeout seconds</label><input type="number" name="timeout_seconds" min="1" max="600" value="${c.timeout_seconds || 120}" required>
+    <label>Temperature (blank to omit)</label><input type="number" name="temperature" min="0" max="2" step="0.1" value="${c.temperature === null ? "" : (c.temperature ?? 0)}">
+    <label>Extra request body (JSON, optional provider settings)</label><textarea name="extra_body" rows="4">${esc(JSON.stringify(c.extra_body || {}, null, 2))}</textarea>
+    <p class="muted">For OpenRouter, vLLM, or a LiteLLM proxy. Support depends on the selected endpoint and model. Extra settings cannot override credentials, messages, or output controls.</p>`,
+    async (form, dialog) => {
+      const data = Object.fromEntries(form);
+      for (const k of [
+        "max_tokens",
+        "context_window_tokens",
+        "timeout_seconds",
+      ])
+        data[k] = Number(data[k]);
+      data.temperature =
+        data.temperature === "" ? null : Number(data.temperature);
+      data.extra_body = JSON.parse(data.extra_body || "{}");
+      if (data.clear_credential) data.credential = "";
+      else if (!data.credential) delete data.credential;
+      delete data.clear_credential;
+      if (c.id) data.id = c.id;
+      await api("models", data);
+      dialog.close();
+      await modelsModal();
+    },
+  );
 }
 function agentToolsModal(id) {
   const agent = state.agents.find((a) => a.id === id);
@@ -666,7 +941,7 @@ function updateCodePanels() {
     (state.coding?.executions || [])
       .map(
         (r) =>
-          `<details class="execution" ${r.id === $("#code-executions")?.dataset.latest ? "open" : ""}><summary><span class="state ${r.status === "running" ? "running" : r.status === "succeeded" ? "" : "error"}">${esc(r.status)}</span> ${esc(r.path)} <small>${time(r.started_at)} · ${esc(name(r.actor))}${r.exit_code !== null ? " · exit " + r.exit_code : ""}</small></summary>${r.error ? `<p class="error-text">${esc(r.error)}</p>` : ""}${r.stdout ? `<label>stdout</label><pre>${esc(r.stdout)}</pre>` : ""}${r.stderr ? `<label>stderr</label><pre>${esc(r.stderr)}</pre>` : ""}${r.output_truncated ? '<p class="muted">Output truncated at 32 KB per stream.</p>' : ""}${r.status === "succeeded" && !r.stdout && !r.stderr ? '<p class="muted">Completed without output.</p>' : ""}</details>`,
+          `<details class="execution" ${r.id === $("#code-executions")?.dataset.latest ? "open" : ""}><summary><span class="state ${r.status === "running" ? "running" : r.status === "succeeded" ? "" : "error"}">${esc(r.status)}</span> ${esc(r.path)} <small>${time(r.started_at)} · ${esc(name(r.actor))}${r.exit_code !== null ? " · exit " + r.exit_code : ""}</small></summary>${r.error ? `<p class="error-text">${esc(r.error)}</p>` : ""}${r.stdout ? `<label>stdout</label><pre>${esc(r.stdout)}</pre>` : ""}${r.stderr ? `<label>stderr</label><pre>${esc(r.stderr)}</pre>` : ""}${["stdout", "stderr"].map((stream) => (r[stream + "_artifact_id"] ? `<button class="quiet" data-artifact="${esc(r[stream + "_artifact_id"])}">View complete ${stream} ↗</button>` : "")).join("")}${r.output_complete === false ? '<p class="error-text">Capture did not complete; saved output remains available.</p>' : ""}${r.output_truncated ? '<p class="muted">Output truncated at 32 KB per stream.</p>' : ""}${r.status === "succeeded" && !r.stdout && !r.stderr && !r.stdout_characters && !r.stderr_characters ? '<p class="muted">Completed without output.</p>' : ""}</details>`,
       )
       .join("") ||
     '<p class="muted">Python execution results will appear here.</p>';
@@ -984,6 +1259,86 @@ function openCode(skipInitialFile = false) {
   const firstFile = state.coding?.files.find((f) => !f.unsupported);
   if (firstFile && !skipInitialFile) act(() => loadCode(firstFile.path));
 }
+async function openArtifact(id) {
+  const d = $("#modal");
+  d.classList.remove("code-modal", "plugin-modal");
+  d.classList.add("plugin-modal");
+  d.innerHTML = `<div class="heading"><h2>Complete output</h2><button id="close-output">Close</button></div><p id="output-page" class="muted"></p><div class="actions"><button id="output-prev">Previous page</button><button id="output-next">Next page</button><a id="output-download">Download complete output</a></div><form id="output-search"><input name="query" required placeholder="Find text in full output"><button>Search</button></form><div id="output-matches"></div><pre id="output-text" class="plugin-output"></pre>`;
+  const outputElement = $("#output-text");
+  d.showModal();
+  $("#close-output").onclick = () => d.close();
+  $("#output-download").href =
+    "/api/admin/artifact?project=" +
+    encodeURIComponent(projectId) +
+    "&id=" +
+    encodeURIComponent(id) +
+    "&download=1";
+  let current = 0,
+    next = null,
+    history = [];
+  const load = async (offset) => {
+    const page = await api(
+      "artifact?id=" + encodeURIComponent(id) + "&offset=" + offset,
+    );
+    if ($("#output-text") !== outputElement) return;
+    current = offset;
+    next = page.next_offset;
+    $("#output-text").textContent = page.text;
+    $("#output-page").textContent =
+      `${page.label} · Characters ${offset}–${offset + page.text.length} of ${page.total_characters} · ${page.source_complete ? "Complete stored output" : "Capture still open or interrupted"}`;
+    $("#output-prev").disabled = !history.length;
+    $("#output-next").disabled = next === null;
+  };
+  $("#output-prev").onclick = () => act(() => load(history.pop()));
+  $("#output-next").onclick = () =>
+    act(async () => {
+      history.push(current);
+      await load(next);
+    });
+  const search = async (query, offset = 0) => {
+    const result = await api(
+      "artifact-search?id=" +
+        encodeURIComponent(id) +
+        "&query=" +
+        encodeURIComponent(query) +
+        "&offset=" +
+        offset,
+    );
+    if ($("#output-text") !== outputElement) return;
+    $("#output-matches").innerHTML =
+      result.matches
+        .map(
+          (m) =>
+            `<button data-output-offset="${m.offset}">Match at ${m.offset}</button>`,
+        )
+        .join("") || "No matches";
+    $("#output-matches")
+      .querySelectorAll("[data-output-offset]")
+      .forEach((b) => {
+        b.onclick = () =>
+          act(async () => {
+            history.push(current);
+            await load(Number(b.dataset.outputOffset));
+          });
+      });
+    if (result.next_offset !== null) {
+      const more = document.createElement("button");
+      more.textContent = "Next matches";
+      more.onclick = () => act(() => search(query, result.next_offset));
+      $("#output-matches").append(more);
+    }
+  };
+  $("#output-search").onsubmit = (e) => {
+    e.preventDefault();
+    const query = new FormData(e.target).get("query");
+    act(() => search(query));
+  };
+  await load(0);
+}
+document.addEventListener("click", (e) => {
+  const button = e.target.closest("[data-artifact]");
+  if (button) act(() => openArtifact(button.dataset.artifact));
+});
 new EventSource("/api/admin/events").onmessage = (e) => {
   if (!projectId || e.data === "update" || e.data === projectId) refresh();
 };

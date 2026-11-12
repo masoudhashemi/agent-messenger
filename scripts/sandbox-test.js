@@ -30,7 +30,7 @@ try {
   assert.match(r.stderr, /failure/);
   r = await run(`import os, socket, pathlib
 assert os.getuid() == 65534
-assert 'TOOLKIT_TOKEN' not in os.environ
+assert 'MODEL_API_KEY' not in os.environ
 assert not pathlib.Path('/var/run/docker.sock').exists()
 assert not pathlib.Path('/Users').exists()
 try:
@@ -58,11 +58,14 @@ print('isolation verified')`);
   r = await pending;
   assert.equal(r.status, "cancelled");
   r = await run('print("x" * 100000)');
-  assert.equal(r.output_truncated, true);
-  assert.ok(r.stdout.length <= 32000);
+  assert.equal(r.output_complete, true);
+  assert.ok(
+    [...s.artifacts.chunks(r.stdout_artifact_id)].join("") ===
+      "x".repeat(100000) + "\n",
+  );
   assert.equal(w.runs().length, 7);
   console.log(
-    "Sandbox tests passed: Python success/failure, host and network isolation, read-only files, fresh environments, timeout, cancellation, output cap.",
+    "Sandbox tests passed: Python success/failure, host and network isolation, read-only files, fresh environments, timeout, cancellation, complete output capture.",
   );
 } finally {
   s.db.close();

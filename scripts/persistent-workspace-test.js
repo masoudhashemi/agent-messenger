@@ -19,7 +19,7 @@ try {
     "generate.py",
     `from pathlib import Path
 import os
-assert 'TOOLKIT_TOKEN' not in os.environ
+assert 'MODEL_API_KEY' not in os.environ
 assert not Path('/var/run/docker.sock').exists()
 assert not Path(${JSON.stringify(dir + "/metadata")}).exists()
 Path('outputs/nested').mkdir(parents=True, exist_ok=True)

@@ -98,8 +98,7 @@ export class ProjectFolder {
       ).trim();
     } catch (e) {
       throw new AppError(
-        "Workspace Git operation failed: " +
-          String(e.stderr || e.message).slice(0, 500),
+        "Workspace Git operation failed: " + String(e.stderr || e.message),
         500,
       );
     }

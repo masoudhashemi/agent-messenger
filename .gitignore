@@ -9,3 +9,7 @@ configs/model.toml
 .DS_Store
 __pycache__/
 *.pyc
+
+# Private endpoint/model configurations and credentials
+configs/*.local.*
+configs/model-*.toml

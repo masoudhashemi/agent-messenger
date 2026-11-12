@@ -1,3 +1,4 @@
+import { requestCompletion } from "./models.js";
 import { toolCatalog } from "./tools/index.js";
 import http from "node:http";
 import { execFile } from "node:child_process";
@@ -114,6 +115,47 @@ const server = http.createServer(async (req, res) => {
       }
     }
     const path = url.pathname.replace(/^\/api\/(admin|agent)/, "");
+    if (isAdmin && path === "/models") {
+      if (req.method === "GET")
+        json({
+          models: projects.models.list(),
+          default: projects.models.describe(null),
+        });
+      else if (req.method === "POST") {
+        json(projects.models.save(body));
+        notify();
+      } else throw new AppError("Not found", 404);
+      return;
+    }
+    if (isAdmin && path === "/models/test" && req.method === "POST") {
+      const config = projects.models.resolve(body.id ?? null);
+      const started = Date.now();
+      const text = await requestCompletion(
+        config,
+        [{ role: "user", content: 'Return JSON: {"ok":true}' }],
+        {
+          type: "object",
+          properties: { ok: { type: "boolean" } },
+          required: ["ok"],
+          additionalProperties: false,
+        },
+        undefined,
+      );
+      let result;
+      try {
+        result = JSON.parse(text);
+      } catch {
+        throw new AppError(
+          "Connection responded, but did not return valid JSON",
+        );
+      }
+      if (result.ok !== true)
+        throw new AppError(
+          "Connection responded, but did not follow the test instruction",
+        );
+      json({ ok: true, elapsed_ms: Date.now() - started, model: config.name });
+      return;
+    }
     if (isAdmin && path === "/projects") {
       if (req.method === "GET") json(projects.list());
       else if (req.method === "POST") {
@@ -126,6 +168,10 @@ const server = http.createServer(async (req, res) => {
         notify();
         json(p);
       } else throw new AppError("Not found", 404);
+      return;
+    }
+    if (isAdmin && path === "/projects/duplicate" && req.method === "POST") {
+      json(projects.duplicate(body.id, body));
       return;
     }
     if (isAdmin && path === "/projects/delete" && req.method === "POST") {
@@ -156,6 +202,72 @@ const server = http.createServer(async (req, res) => {
       ? store.authenticate(req.headers.authorization?.replace(/^Bearer /, ""))
       : null;
     if (isAgent && !who) throw new AppError("Agent bearer token required", 401);
+    if (req.method === "GET" && path === "/group") {
+      const chatId = url.searchParams.get("chat_id");
+      store.groups.scope(chatId, who);
+      json({
+        ...store.chat(chatId),
+        report:
+          url.searchParams.get("view") === "report"
+            ? store.get(
+                "SELECT * FROM messages WHERE id=? AND chat_id=?",
+                store.groups.info(chatId).final_message_id,
+                chatId,
+              )
+            : undefined,
+        history:
+          url.searchParams.get("view") === "history"
+            ? store.groups.history(chatId, who, {
+                offset: Number(url.searchParams.get("offset") || 0),
+              })
+            : undefined,
+        decisions: store.groups.decisions(chatId, who, {
+          offset: Number(url.searchParams.get("offset") || 0),
+        }),
+      });
+      return;
+    }
+    if (req.method === "GET" && path === "/artifact-search") {
+      json(
+        store.artifacts.search(url.searchParams.get("id"), who, {
+          query: url.searchParams.get("query"),
+          offset: Number(url.searchParams.get("offset") || 0),
+        }),
+      );
+      return;
+    }
+    if (req.method === "GET" && path === "/artifact") {
+      const id = url.searchParams.get("id");
+      store.artifacts.info(id, who);
+      if (url.searchParams.get("download") === "1") {
+        res.writeHead(200, {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Content-Disposition": `attachment; filename="output-${id}.txt"`,
+          "Cache-Control": "no-store",
+        });
+        for (const chunk of store.artifacts.chunks(id, who)) {
+          if (res.destroyed) break;
+          if (!res.write(chunk))
+            await new Promise((resolve) => {
+              const done = () => {
+                res.off("drain", done);
+                res.off("close", done);
+                resolve();
+              };
+              res.once("drain", done);
+              res.once("close", done);
+            });
+        }
+        res.end();
+      } else
+        json(
+          store.artifacts.read(id, who, {
+            offset: Number(url.searchParams.get("offset") || 0),
+            limit: 4000,
+          }),
+        );
+      return;
+    }
     if (req.method === "GET" && path === "/state") {
       json(
         who
@@ -163,6 +275,7 @@ const server = http.createServer(async (req, res) => {
           : {
               ...store.snapshot(),
               ...harness.state(),
+              model: projects.models.describe(harness.modelId),
               project,
               web_search: harness.webSearch.status(),
               tools: toolCatalog(harness),
@@ -270,7 +383,8 @@ const server = http.createServer(async (req, res) => {
             : "xdg-open";
       await promisify(execFile)(command, [workspace.root], { timeout: 5000 });
       result = { ok: true };
-    } else if (path === "/settings" && !who) result = harness.configure(body);
+    } else if (path === "/model" && !who) result = harness.selectModel(body.id);
+    else if (path === "/settings" && !who) result = harness.configure(body);
     else if (path === "/agents" && !who)
       result = store.createAgent(body.name, body.prompt, body.tools || []);
     else if ((path === "/agent-tools" || path === "/agent-details") && !who)
@@ -279,6 +393,10 @@ const server = http.createServer(async (req, res) => {
         prompt: body.prompt,
         tools: body.tools,
       });
+    else if (path === "/group-settings")
+      result = store.groups.update(body.chat_id, body, who, workspace);
+    else if (path === "/group-decision")
+      result = store.groups.decide(body.chat_id, body, who);
     else if (path === "/chats")
       result = store.createChat(
         body.name,
@@ -360,6 +478,7 @@ const server = http.createServer(async (req, res) => {
           project.summary?.trim() ||
           project.name,
         body.maxTurns,
+        body.required_files || [],
       );
     else if (path === "/stop" && !who) {
       harness.stop();

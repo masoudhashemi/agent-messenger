@@ -48,7 +48,7 @@ from pathlib import Path
 def test_environment():
     assert sys.prefix == '/workspace/.venv'
     assert idna.__version__ == '3.10'
-    assert 'TOOLKIT_TOKEN' not in os.environ
+    assert 'MODEL_API_KEY' not in os.environ
     assert not Path('/var/run/docker.sock').exists()
     assert not Path(${JSON.stringify(dir)}).exists()
     try:
