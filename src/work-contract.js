@@ -10,12 +10,16 @@ export function workFor(run, actor) {
     status: "working",
   });
 }
-export function addReplyTarget(run, actor, message) {
+export function addReplyTarget(run, actor, message, explicit = false) {
   const work = workFor(run, actor);
-  if (!work.reply_targets.some((r) => r.message_id === message.id))
+  const existing = work.reply_targets.find((r) => r.message_id === message.id);
+  if (existing) {
+    if (explicit) existing.explicit = true;
+  } else
     work.reply_targets.push({
       chat_id: message.chat_id,
       message_id: message.id,
+      explicit,
     });
 }
 export function workContext(work, store = null, actor = null, since = null) {
@@ -26,10 +30,10 @@ export function workContext(work, store = null, actor = null, since = null) {
     required_files: work.required_files,
     unresolved_tools: Object.values(work.errors),
     research_requires_citations: work.searched,
-    ...(work.searched && store && actor && since
+    ...(store && actor
       ? {
-          retrieved_sources: store.sources.observedSources(actor, since),
-          search_artifacts: store.sources.searchArtifacts(actor, since),
+          retrieved_sources: store.sources.observedSources(actor, ""),
+          search_artifacts: store.sources.searchArtifacts(actor, ""),
         }
       : {}),
     status: work.status,
@@ -65,17 +69,19 @@ export function completionProblems(store, workspace, run, actor) {
       chat.kind === "group"
         ? Object.values(run.work || {}).flatMap((w) => w.deliveries)
         : work.deliveries;
-    const response = deliveryIds.some((id) => {
-      const message = store.get(
-        "SELECT chat_id,id FROM messages WHERE id=?",
-        id,
-      );
-      return (
-        message &&
-        message.chat_id === target.chat_id &&
-        message.id > target.message_id
-      );
-    });
+    const response = target.explicit
+      ? (work.resolved_requests || []).includes(target.message_id)
+      : deliveryIds.some((id) => {
+          const message = store.get(
+            "SELECT chat_id,id FROM messages WHERE id=?",
+            id,
+          );
+          return (
+            message &&
+            message.chat_id === target.chat_id &&
+            message.id > target.message_id
+          );
+        });
     if (!response)
       problems.push(
         `Reply to chat ${target.chat_id} for request ${target.message_id}`,
@@ -98,13 +104,13 @@ export function completionProblems(store, workspace, run, actor) {
     }
   }
   if (work.searched) {
-    const urls = new Set(store.sources.observedUrls(actor, run.started_at));
+    const urls = new Set(store.sources.observedUrls(actor, ""));
     // A lead may cite evidence handed off in a message it actually received.
     for (const row of store.all(
       "SELECT m.body FROM message_reads r JOIN messages m ON m.id=r.message_id WHERE r.agent_id=? AND m.sender_id!=? AND m.created_at>=?",
       actor,
       actor,
-      run.started_at,
+      "",
     ))
       for (const url of row.body.match(/https?:\/\/[^\s<>\])]+/g) || [])
         urls.add(url);

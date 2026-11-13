@@ -193,6 +193,14 @@ test("file ranges, revisions and long-line continuations preserve exact content"
     }).content,
     "last\n",
   );
+  const clamped = r.execute(a.id, {
+    type: "read_file",
+    path: "long.py",
+    start_line: 2,
+    end_line: 80,
+  });
+  assert.equal(clamped.content, "changed\n");
+  assert.equal(clamped.end_line, 3);
   let diffAction = { type: "read_file_diff", path: "long.py", revision: 2 };
   const diffRows = [];
   do {

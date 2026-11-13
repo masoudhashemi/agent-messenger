@@ -8,6 +8,7 @@ let state = { agents: [], chats: [], history: [] },
   filter = "all",
   query = "",
   drafts = {};
+const chatHistory = new Map();
 const $ = (s) => document.querySelector(s),
   esc = (s) =>
     String(s ?? "").replace(
@@ -68,6 +69,13 @@ async function refresh() {
       return;
     }
     state = await api("state");
+    for (const chat of state.chats) {
+      const cached = chatHistory.get(chat.id);
+      if (!cached) continue;
+      for (const m of chat.messages) cached.messages.set(m.id, m);
+      chat.messages = [...cached.messages.values()].sort((a, b) => a.id - b.id);
+      chat.next_before = cached.next_before;
+    }
     if (!state.chats.some((c) => c.id === selected) && state.chats.length)
       selected =
         state.chats.find((c) => c.kind === "group")?.id || state.chats[0].id;
@@ -156,6 +164,7 @@ function renderHome(projects) {
                   task: p.run.task,
                   maxTurns: p.run.maxTurns,
                   required_files: p.run.required_files || [],
+                  resume: true,
                 },
                 p.id,
               );
@@ -168,13 +177,29 @@ function renderHome(projects) {
   );
 }
 function deliveryStatus(message, chat) {
-  if (message.sender_id) return "";
   const request = state.requests?.find((r) => r.message_id === message.id);
-  const label =
-    request?.status === "queued"
+  if (
+    message.sender_id &&
+    !request &&
+    (chat.kind !== "direct" || chat.messages.at(-1)?.id !== message.id)
+  )
+    return "";
+  const pending = request?.pending_replies || [];
+  const label = request?.waiting_for_budget
+    ? "Waiting for more turns · Resume or retry"
+    : request?.status === "queued"
       ? "Queued for agents"
       : request?.status === "delivered"
-        ? "Delivered to agents"
+        ? pending.length
+          ? "Awaiting reply · " +
+            pending
+              .map((id) => state.agents.find((a) => a.id === id)?.name || id)
+              .join(", ")
+          : request.responses?.length
+            ? request.responses.some((r) => r.outcome === "blocker")
+              ? "Blocker reported"
+              : "Answered"
+            : "Delivered to agents"
         : request?.status === "cancelled"
           ? "Agent response stopped"
           : request?.status === "error"
@@ -182,7 +207,11 @@ function deliveryStatus(message, chat) {
             : chat.read_states.every((r) => r.last_read_id >= message.id)
               ? "Read by agents"
               : "Not yet scheduled";
-  const retry = !request || ["error", "cancelled"].includes(request.status);
+  const retry =
+    !request ||
+    ["error", "cancelled"].includes(request.status) ||
+    ((pending.length || request?.waiting_for_budget) &&
+      state.run?.status !== "running");
   return `<div class="delivery-status ${request?.status === "error" ? "delivery-error" : ""}"><span>${esc(label)}</span>${request?.error ? `<span>${esc(request.error)}</span>` : ""}${retry ? `<button class="quiet" data-respond="${message.id}">${request ? "Retry" : "Ask agents to respond"}</button>` : ""}</div>`;
 }
 const icon = (c) =>
@@ -381,7 +410,7 @@ function render() {
         )
         .join("") ||
       '<p class="muted" style="padding:12px">Your conversations will appear here.</p>'
-    }</div><div class="sidebar-foot"><button id="manage-plugins" class="quiet">⊞ Tools & plugins</button><button id="search-knowledge" class="quiet" title="Search accessible messages, source and executions">⌕ Search</button><button id="code-workspace" class="quiet">⌘ Code workspace <small>${state.coding?.files.length || 0}</small></button></div></aside><main class="main">${c ? `<header class="chat-head"><div class="avatar ${c.kind}">${esc(icon(c))}</div><div><h2>${esc(c.name)}</h2><p>${esc(c.members.map(name).join(", "))}</p></div><span class="badge">${c.kind === "self" ? `${esc(name(c.members[0]))} · Private self-thread` : c.kind === "direct" ? "Private conversation" : "Members only"}</span><button class="quiet" id="edit-chat" title="Edit conversation">⋯</button></header><div class="messages">${groupCard(c)}<div class="date">${esc(c.summary || "This is the beginning of this conversation.")}</div>${c.messages.map((m) => `<article id="message-${m.id}" class="message ${!m.sender_id ? "operator" : ""}"><div class="avatar">${esc(initials(name(m.sender_id)))}</div><div class="message-content"><div class="message-meta">${esc(name(m.sender_id))}<time>${time(m.created_at)}</time></div><div class="bubble">${renderMessage(m.body, state.chats, m.id)}</div>${deliveryStatus(m, c)}</div></article>`).join("") || '<div class="empty"><div class="avatar">↗</div><h2>Space to think together.</h2><p>Send a request here. The agents in this conversation will start automatically.</p></div>'}${chatActivity(c.id)}</div><form class="composer" id="compose"><div class="compose-box"><textarea id="message" rows="1" placeholder="Message as operator…">${esc(drafts[c.id] || "")}</textarea><button class="primary" title="Send message">↑</button></div><div class="composer-note">Sending wakes ${c.kind === "self" ? "this agent only" : "the conversation members"} · Ctrl/⌘ + Enter to send</div></form>` : `<div class="empty"><div class="avatar">r.</div><h2>${state.agents.length ? esc(state.project?.name || "Your team is ready.") : "Give your agents a place to talk."}</h2><p>${state.agents.length ? esc(state.project?.summary || "Your Lead agent is configured and ready. Run the team to start working notes and conversations, or add more teammates.") : "Add agents with system prompts, set an objective, and run the team. Conversations appear as agents create them; every turn starts with private working notes."}</p><div class="actions">${state.agents.length ? `<button class="primary" id="welcome-run">${running ? "■ Stop run" : "▶ Run team"}</button>` : ""}<button class="quiet" id="welcome-agent">${state.agents.length ? "＋ Add an agent" : "Create your first agent"}</button></div></div>`}</main><aside class="inspector"><section class="section"><div class="section-head"><h2>Workspace agents <small>${state.agents.length}</small></h2><button id="new-agent">＋ Add</button></div>${state.agents.map((a) => `<div class="agent"><div class="avatar">${esc(initials(a.name))}</div><div><div class="agent-name">${esc(a.name)} <button class="quiet" data-agent-tools="${a.id}" aria-label="Tools for ${esc(a.name)}">Edit / Tools${a.tools?.length ? ` · ${a.tools.length}` : ""}</button></div><div class="agent-role" data-agent-tools="${a.id}" title="Click to view or edit system prompt">${esc(a.prompt.slice(0, 48))}${a.prompt.length > 48 ? "…" : ""}</div>${agentActivity(a.id)}${a.error ? `<div class="error-text">${esc(a.error)}</div>` : ""}</div><span class="state ${a.status}">${a.status}</span></div>`).join("") || '<p class="muted">Build a team of specialized agents.</p>'}</section><section class="section run-box"><div class="heading"><h2>Agent harness</h2><button id="harness-models" class="quiet">Models · ${esc((running && (state.run?.model?.label || state.run?.model?.name)) || state.model?.label || state.model?.name || "Configure")}</button></div><p class="muted">Set a shared objective. Agents choose where to talk.</p><textarea id="task" placeholder="What should the team work on?">${esc(taskValue)}</textarea><label for="required-files">Required output files (one path per line)</label><textarea id="required-files" rows="2" placeholder="reports/findings.md">${esc($("#required-files")?.value ?? (state.run?.required_files || []).join("\n"))}</textarea><div class="agent-creation-settings"><label><input type="checkbox" id="allow-agent-creation" ${state.settings?.allow_agent_creation ? "checked" : ""}> Allow agents to create teammates</label><label>New agents per run <input type="number" id="max-new-agents" min="1" max="10" value="${esc(maxNewAgents)}"></label><small class="muted">Shares this run’s turn budget. New teammates inherit their creator’s tools. Private chats stay private.</small></div><div class="run-controls"><input id="turns" type="number" min="1" max="100" value="${esc(turns ?? 12)}" aria-label="Maximum turns"><button class="primary" id="run" ${!state.agents.length ? "disabled" : ""}>${running ? "■ Stop run" : "▶ Run team"}</button></div><p class="muted">${state.run ? `${esc(state.run.status.replaceAll("_", " "))} · ${state.run.turns}/${state.run.maxTurns} turns` : "Bounded turns · All workspace agents"}</p><p class="muted">Completion checks: ${esc(state.run?.completion?.status?.replaceAll("_", " ") || "Pending")} · checks delivery, declared files, and source access; not factual correctness.</p><p class="muted">Selective context · ${
+    }</div><div class="sidebar-foot"><button id="manage-plugins" class="quiet">⊞ Tools & plugins</button><button id="search-knowledge" class="quiet" title="Search accessible messages, source and executions">⌕ Search</button><button id="code-workspace" class="quiet">⌘ Code workspace <small>${state.coding?.files.length || 0}</small></button></div></aside><main class="main">${c ? `<header class="chat-head"><div class="avatar ${c.kind}">${esc(icon(c))}</div><div><h2>${esc(c.name)}</h2><p>${esc(c.members.map(name).join(", "))}</p></div><span class="badge">${c.kind === "self" ? `${esc(name(c.members[0]))} · Private self-thread` : c.kind === "direct" ? "Private conversation" : "Members only"}</span><button class="quiet" id="edit-chat" title="Edit conversation">⋯</button></header><div class="messages">${groupCard(c)}<div class="date">${esc(c.summary || "This is the beginning of this conversation.")}</div>${c.next_before ? `<button class="quiet" id="load-older">Load older messages</button>` : ""}${c.messages.map((m) => `<article id="message-${m.id}" class="message ${!m.sender_id ? "operator" : ""}"><div class="avatar">${esc(initials(name(m.sender_id)))}</div><div class="message-content"><div class="message-meta">${esc(name(m.sender_id))}<time>${time(m.created_at)}</time></div><div class="bubble">${renderMessage(m.body, state.chats, m.id)}</div>${deliveryStatus(m, c)}</div></article>`).join("") || '<div class="empty"><div class="avatar">↗</div><h2>Space to think together.</h2><p>Send a request here. The agents in this conversation will start automatically.</p></div>'}${chatActivity(c.id)}</div><form class="composer" id="compose"><div class="compose-box"><textarea id="message" rows="1" placeholder="Message as operator…">${esc(drafts[c.id] || "")}</textarea><button class="primary" title="Send message">↑</button></div><div class="composer-note">Sending wakes ${c.kind === "self" ? "this agent only" : "the conversation members"} · Ctrl/⌘ + Enter to send</div></form>` : `<div class="empty"><div class="avatar">r.</div><h2>${state.agents.length ? esc(state.project?.name || "Your team is ready.") : "Give your agents a place to talk."}</h2><p>${state.agents.length ? esc(state.project?.summary || "Your Lead agent is configured and ready. Run the team to start working notes and conversations, or add more teammates.") : "Add agents with system prompts, set an objective, and run the team. Conversations appear as agents create them; every turn starts with private working notes."}</p><div class="actions">${state.agents.length ? `<button class="primary" id="welcome-run">${running ? "■ Stop run" : "▶ Run team"}</button>` : ""}<button class="quiet" id="welcome-agent">${state.agents.length ? "＋ Add an agent" : "Create your first agent"}</button></div></div>`}</main><aside class="inspector"><section class="section"><div class="section-head"><h2>Workspace agents <small>${state.agents.length}</small></h2><button id="new-agent">＋ Add</button></div>${state.agents.map((a) => `<div class="agent"><div class="avatar">${esc(initials(a.name))}</div><div><div class="agent-name">${esc(a.name)} <button class="quiet" data-agent-tools="${a.id}" aria-label="Tools for ${esc(a.name)}">Edit / Tools${a.tools?.length ? ` · ${a.tools.length}` : ""}</button></div><div class="agent-role" data-agent-tools="${a.id}" title="Click to view or edit system prompt">${esc(a.prompt.slice(0, 48))}${a.prompt.length > 48 ? "…" : ""}</div>${agentActivity(a.id)}${a.error ? `<div class="error-text">${esc(a.error)}</div>` : ""}</div><span class="state ${a.status}">${a.status}</span></div>`).join("") || '<p class="muted">Build a team of specialized agents.</p>'}</section><section class="section run-box"><div class="heading"><h2>Agent harness</h2><button id="harness-models" class="quiet">Models · ${esc((running && (state.run?.model?.label || state.run?.model?.name)) || state.model?.label || state.model?.name || "Configure")}</button></div><p class="muted">Set a shared objective. Agents choose where to talk.</p><textarea id="task" placeholder="What should the team work on?">${esc(taskValue)}</textarea><label for="required-files">Required output files (one path per line)</label><textarea id="required-files" rows="2" placeholder="reports/findings.md">${esc($("#required-files")?.value ?? (state.run?.required_files || []).join("\n"))}</textarea><div class="agent-creation-settings"><label><input type="checkbox" id="allow-agent-creation" ${state.settings?.allow_agent_creation ? "checked" : ""}> Allow agents to create teammates</label><label>New agents per run <input type="number" id="max-new-agents" min="1" max="10" value="${esc(maxNewAgents)}"></label><small class="muted">Shares this run’s turn budget. New teammates inherit their creator’s tools. Private chats stay private.</small></div><div class="run-controls"><input id="turns" type="number" min="1" max="100" value="${esc(turns ?? 12)}" aria-label="Maximum turns"><button class="primary" id="run" ${!state.agents.length ? "disabled" : ""}>${running ? "■ Stop run" : "▶ Run team"}</button></div><p class="muted">${state.run ? `${esc(state.run.status.replaceAll("_", " "))} · ${state.run.turns}/${state.run.maxTurns} turns` : "Bounded turns · All workspace agents"}</p><p class="muted">Completion checks: ${esc(state.run?.completion?.status?.replaceAll("_", " ") || "Pending")} · checks delivery, declared files, and source access; not factual correctness.</p><p class="muted">Selective context · ${
       Object.entries(state.context_usage || {})
         .map(
           ([id, u]) =>
@@ -398,6 +427,47 @@ function render() {
         .join("") ||
       '<p class="muted">Agent actions will appear here as they work.</p>'
     }</section><div class="privacy">◈ &nbsp; You are the operator.<br>You can monitor every thread. Agents can access only conversations they belong to.</div></aside></div>`;
+  if ($("#load-older"))
+    $("#load-older").onclick = () =>
+      act(async () => {
+        const button = $("#load-older");
+        button.disabled = true;
+        const chatId = c.id;
+        const anchor = $(".messages .message")?.id;
+        const top = anchor
+          ? document.getElementById(anchor).getBoundingClientRect().top
+          : 0;
+        try {
+          const page = await api(
+            "messages?chat_id=" +
+              encodeURIComponent(chatId) +
+              "&before=" +
+              c.next_before,
+          );
+          const current = state.chats.find((chat) => chat.id === chatId);
+          const cached = chatHistory.get(chatId) || { messages: new Map() };
+          for (const m of [
+            ...c.messages,
+            ...(current?.messages || []),
+            ...page.messages,
+          ])
+            cached.messages.set(m.id, m);
+          cached.next_before = page.next_before;
+          chatHistory.set(chatId, cached);
+          if (current) {
+            current.messages = [...cached.messages.values()].sort(
+              (a, b) => a.id - b.id,
+            );
+            current.next_before = page.next_before;
+          }
+          render();
+          if (selected === chatId && anchor && document.getElementById(anchor))
+            $(".messages").scrollTop +=
+              document.getElementById(anchor).getBoundingClientRect().top - top;
+        } finally {
+          if (button.isConnected) button.disabled = false;
+        }
+      });
   $("#manage-models").onclick = () => act(modelsModal);
   $("#harness-models").onclick = () => act(modelsModal);
   document.querySelectorAll("[data-activity-chat]").forEach((button) => {

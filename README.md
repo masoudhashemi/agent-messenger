@@ -8,7 +8,7 @@ A local, persistent messaging workspace for autonomous LLM agents, with a live o
 
 The demo starts with **one agent, Atlas**. With agent creation enabled, Atlas identifies the missing testing role and creates **Nova** with its own system prompt. They coordinate through a private direct chat and a group chat, keep separate self notes, and produce **four passing Python tests in Docker**. The final view shows their shared files and Git authorship. The run completed in nine turns; [recorded results](docs/media/demo.json) are included.
 
-**Can agents create other agents automatically? Yes, when you enable it.** Each project has an **Allow agents to create teammates** setting and a limit of 1–10 new agents per run. A created agent joins the current run with its own identity and delegated task, shares the remaining turn budget, and does not inherit private chats or arbitrary group memberships. Teams with three or more active participants use a shared coordination group.
+**Can agents create other agents automatically? Yes, when you enable it.** Each project has an **Allow agents to create teammates** setting and a limit of 1–10 new agents per run. A created agent joins the current run with its own identity and delegated task, shares the remaining turn budget, and does not inherit private chats or arbitrary group memberships. An initial team of three or more uses a shared coordination group; later teammates need an explicit invitation.
 
 ## Run
 
@@ -27,11 +27,11 @@ npm start
 
 To execute Python code, start Docker and run `docker pull python:3.12-slim`. For per-project uv environments, also run `npm run setup:uv`.
 
-The home page lists projects with **Review**, **Resume**, and **New project** actions. Each project has its own agents, conversations, credentials, and saved run state. Review opens the existing history; Resume starts another bounded run with the saved objective and current agents. Running projects offer **Open live**. Interrupted runs are marked after a server restart and can be resumed.
+The home page lists projects with **Review**, **Resume**, and **New project** actions. Each project has its own agents, conversations, credentials, and saved run state. Review opens the existing history; Resume starts another bounded run with the saved objective, per-agent deliverables, unresolved errors, reply obligations, and current agents. Running projects offer **Open live**. Interrupted runs are marked after a server restart and can be resumed.
 
 Use **Delete** on a project card to remove its agents, chats, tasks, and execution records. Confirm by typing the exact project name. Optionally select **Also delete all project files and artifacts** to remove its workspace folder (including `.venv`), Git history, and package cache. Unchecked, these remain on disk. Deletion is permanent; stop active runs and wait for executions to finish first.
 
-Every new project starts empty. Add agents by name and system prompt, enter an objective, then click **Run team**. Creating an agent does not create any conversations. Agents choose and create self, direct, and group threads as they work. The operator can send messages into any thread and monitor live agent activity. The turn budget is shared across agents; a run completes when agents finish or reaches the budget. Sending a new operator message automatically wakes the agents in that conversation, even after the previous run completed. A self-thread wakes its owner; a direct chat wakes both participants; a group wakes its members. Messages from external agents wake the other participants. Agent messages within a run bring addressed collaborators into that bounded run. New requests arriving during an active turn are retained, and requests not yet attempted at the turn limit get a fresh bounded run. Each model receives only requests from its own conversations. Stop cancels queued requests as well as the current run. Delivery status and Retry appear below operator messages; delivery means the agent received the request, not that the work is complete.
+Every new project starts empty. Add agents by name and system prompt, enter an objective, then click **Run team**. Creating an agent does not create any conversations. Agents choose and create self, direct, and group threads as they work. The operator can send messages into any thread and monitor live agent activity. The turn budget is shared across agents; a run completes when agents finish or reaches the budget. Sending a new operator message automatically wakes the agents in that conversation, even after the previous run completed. A self-thread wakes its owner; a direct chat wakes both participants; a group wakes its members. Messages from external agents wake the other participants. Agent messages within a run bring addressed collaborators into that bounded run. New requests arriving during an active turn are retained, and agent requests at the turn limit wait for Resume or Retry. New operator requests may authorize a fresh bounded run. Each model receives only requests from its own conversations. Stop cancels queued requests as well as the current run. Delivery status and Retry appear below operator messages; delivery means the agent received the request, not that the work is complete.
 
 The runtime has no third-party dependencies. Development browser tests use Playwright.
 
@@ -50,7 +50,7 @@ An agent can then issue:
 }
 ```
 
-The harness creates the teammate, opens a direct chat containing the delegated task, and automatically enrolls it in the current run. Both the creation and its result are recorded in the creator's self thread. The new agent receives its own system prompt, the run objective, shared project files, and the delegation chat; existing private chats and arbitrary group memberships are not inherited. In a run with three or more participants, it joins the shared coordination group; invite it to other relevant groups explicitly. Its API token is never returned to the creating agent.
+The harness creates the teammate, opens a direct chat containing the delegated task, and automatically enrolls it in the current run. Both the creation and its result are recorded in the creator's self thread. The new agent receives its own system prompt, the run objective, shared project files, and the delegation chat; existing private chats and arbitrary group memberships are not inherited. Invite it explicitly to the coordination group or any other group whose history it needs. Its API token is never returned to the creating agent.
 
 All agents share the existing turn budget. The creation limit applies across the whole run, including teammates created by other new agents, and agent-created teams cannot grow past 30 project agents. Duplicate names are rejected; agents should contact existing teammates instead. Each new run resets the per-run creation allowance. These controls do not limit manual operator-created agents.
 
@@ -72,6 +72,12 @@ The configuration reader supports the simple scalar `[model]` fields used by the
 
 ## Conversation model
 
+Agent `direct` actions require a response by default. Use `requires_reply: false` for informational directs, or `requires_reply: true` with `send` for a request in an existing chat. Use `reply` with `response_kind: "final"` (the default), `"progress"`, or `"blocker"`. Only final answers and blockers resolve requests. Specify `request_ids` to select the incoming message IDs being answered; it is required when multiple requests share a chat. Plain `send` and `direct` messages are progress unless explicitly marked final/blocker with request IDs. A final reply does not automatically ask for another reply. Explicit `requires_reply: true` can attach a new question to an answer. Generated teammates' assignments use the same tracking.
+
+Reading and answering are separate: unanswered agent requests persist across runs and restarts, reappear in the recipient's context, and prevent successful completion until answered or explicitly blocked. The UI shows **Awaiting reply** and **Answered**, with retry available after a run ends. Agent requests sent on the last turn remain queued as **Waiting for more turns**. Resume or Retry explicitly grants more work; automatic follow-ups consume only the remaining allowance and never refill it. New operator messages can authorize a fresh bounded run. Already-delivered but unanswered requests remain pending for resume/retry; they do not create unlimited automatic runs. The turn budget is shared across the team.
+
+Previously read research sources remain available to the same agent across resumed runs. Other agents do not inherit its private source history; they still need an authorized handoff or their own retrieval.
+
 - **Direct:** exactly two agents, fixed membership. A pair reuses its existing direct conversation.
 - **Group:** a subset of agents. Members and the operator can invite agents. New members can read existing history.
 - **Self:** exactly one agent; any number of separately named threads for planning, experiments, notes, or follow-up.
@@ -79,6 +85,8 @@ The configuration reader supports the simple scalar `[model]` fields used by the
 All threads have an editable name and short summary. Summaries are maintained explicitly by agents or the operator, not automatically generated. Every member has independent read receipts and unread counts. Search results and summaries do not mark messages read. The harness acknowledges complete messages only after the model receives them and responds; skipped messages remain unread. Reading the operator monitor never changes an agent's receipts. External clients explicitly acknowledge message IDs.
 
 ## Context and retrieval
+
+The monitor initially loads the latest 200 messages per conversation. **Load older messages** retrieves earlier pages without dropping stored content; loaded pages survive live refreshes. Model failures are written to a private self chat even when no valid working note was returned. Invalid model output is retained as an artifact linked from that error.
 
 Agents receive a bounded context containing their instructions, current task, incoming requests, a small recent window from the active conversation, their selected self notebook, and directories of accessible chats and shared files. Other accessible transcripts and full execution logs are fetched on demand. The active task conversation stays selected across turns; `focus_chat` switches it explicitly. Agents can keep separate named self notebooks and select the appropriate one in `working_note`.
 
@@ -153,7 +161,7 @@ The app binds to `127.0.0.1`. The human operator has privileged access to every 
 
 This is a single-operator local application: other processes/users with access to your local machine can act as the operator or read the database. It does not provide end-to-end encryption, remote multi-user login, or an OS sandbox for agent processes. Do not expose the server through a public proxy without adding proper operator authentication. The harness provides messaging and project-file actions plus Python execution inside Docker containers. It does not provide host shell execution.
 
-Data lives in ignored `data/projects/`: a catalog plus one SQLite database per project. Set `PROJECTS_DIR` to use another directory. Conversations, agents, summaries, read positions, recent turn activity, and the last run objective persist after restarting. In-flight model calls do not survive a restart; their saved runs become interrupted. Queued chat requests persist and restart when the project is opened. Manually started runs can be resumed. The older single-workspace database is retained separately; it is not loaded into new projects.
+Data lives in ignored `data/projects/`: a catalog plus one SQLite database per project. Set `PROJECTS_DIR` to use another directory. Conversations, agents, summaries, read positions, recent turn activity, and the last run objective persist after restarting. In-flight model calls do not survive a restart; their saved runs become interrupted. Queued chat requests persist; reopening the project does not replenish exhausted agent turn budgets. Manually started runs can be resumed. The older single-workspace database is retained separately; it is not loaded into new projects.
 
 Project databases are local and are not distributed with the repository. To create an example project from a recorded Gemma integration test, run `npm run test:live` then `npm run example` to add it. This does not populate other projects.
 
@@ -169,10 +177,14 @@ Active conversations are highlighted in the chat list with animated dots and the
 
 ## Completion and research checks
 
+Actions execute sequentially. The first validation error, tool exception, or failed execution result stops the rest of that response's batch. Remaining actions are recorded and displayed as **skipped**, with their arguments preserved; they are not executed or automatically retried. The agent receives the failure and skipped actions on its next turn and must repair the problem before resubmitting needed work. Success announcements should follow inspection of the relevant write or execution result in a later turn.
+
+Detailed errors remain in the working self chat. A brief failure status is also sent to the active collaboration chat, or the single request destination; when neither exists and there are no private request destinations, the team's shared group is used. The notice contains no private arguments, raw errors, or self-chat links and does not count as a completed task delivery. If no unambiguous collaboration destination exists, the failure stays in self chat and run history.
+
 A run ending is separate from completing its task. The harness displays **Completion checks** as `checks_passed`, `blocked`, or `incomplete`. These checks cover delivery, required files, and source access, not factual correctness.
 
 - Failed actions (including unsuccessful executions) prevent successful `finish`, including on a later turn, until the failed operation is successfully retried against the same target. A corrected `reply` can resolve a failed `send`. Agents can explicitly finish as blocked with a reason; this is not recorded as successful completion.
-- Operator requests and newly delegated tasks carry explicit `work_contract.reply_targets`. `reply` chooses the known destination; if several targets exist the agent must choose one. Without a request destination, a designated team owner replies to the shared synthesis group; other agents get a private **Results** conversation visible to the operator. Private progress notes do not count as final delivery. In a group, another agent's delivered answer can satisfy the shared request.
+- Operator requests and newly delegated tasks carry explicit `work_contract.reply_targets`. `reply` chooses the known destination; if several targets exist the agent must choose one. Without a request destination, a designated team owner replies to the shared synthesis group; other agents get a private **Results** conversation visible to the operator. Private progress notes do not count as final delivery. Tracked requests require an explicit final answer or blocker from each requested recipient; progress messages do not satisfy them.
 - Enter required document paths in **Required output files** before starting a run, or pass `required_files` to the run API. They are assigned to the initial lead. Agents can also add paths with `set_deliverables`; declared paths cannot be removed during the run. A requested document should be declared before work starts. Completion checks verify that those files exist; they do not infer unstated file requirements or judge the document's quality.
 - Searches preserve full artifacts and expose a paginated source index. `read_source` loads an individual provider excerpt and records access. Research completion requires a delivered citation to retrieved evidence or a source URL in a collaborator handoff the agent read. It does not require loading every search result. Handoffs should include findings, citations, uncertainties, and deliverable paths.
 - Researched work, delegated tasks, and declared deliverables require a `finish.summary`, which updates the working thread and reply conversations. Action audits retain sanitized arguments (including failed destinations); oversized arguments are stored as private artifacts with full access.
@@ -305,7 +317,6 @@ npm run demo:render
 
 Recording uses installed Google Chrome, an isolated temporary project, and the real model endpoint. It creates one initial agent, enables teammate creation, and verifies that an agent-created specialist communicates and runs successful Docker tests. The tour reopens that same real session and records explicit tab switches with explanations of group, direct, and self-chat visibility. Rendering produces the GIF, MP4, and result summary in `docs/media/`. Raw captures stay in the temporary directory printed by the recorder; delete that directory after rendering. Rendering accepts an explicit capture directory as `npm run demo:render -- /path/to/capture`.
 
-
 ### Per-agent web search
 
 Click **Tools** beside an agent, enable **Web search**, and save. The same checkbox appears when creating an agent. This permission is off by default and enforced by the server. Automatically created teammates inherit their creator’s optional tools when `tools` is omitted. An explicit `tools: []` disables optional tools for the teammate; an explicit subset narrows access. Agents cannot delegate tools they do not have. Existing teammates keep their saved permissions.
@@ -323,7 +334,6 @@ Ask an enabled agent, for example: “Search the web for Python testing best pra
 
 Each successful search produces a source card in the agent's self chat, with up to five clickable links and bounded snippets. Results are delivered to the agent on its next turn; it can then share a cited answer in the task chat. This tool searches snippets; it does not browse full pages. Disabled tools, missing configuration, provider errors and timeouts produce explicit action errors.
 
-
 ### Adding tools
 
 For API integrations, open **Tools & plugins** inside a project. Add a public HTTPS API through the form, use the weather template, or import a JSON manifest. Install, edit, test, export and remove plugins without a server restart. Enable each installed plugin through the agent’s **Tools** button; automatic teammates inherit their creator’s enabled tools. Credentials stay server-side and are omitted from exports. See the [Tools and plugins guide](docs/tools.md) for step-by-step instructions:
@@ -340,7 +350,7 @@ Optional tools are registered in `src/tools/index.js`. Add a tool definition mod
 
 Groups have a purpose, owner, member roles, deliverables, completion criteria, and a lifecycle: active, awaiting input, blocked, or resolved. The chat header offers **Manage group**, **Decisions**, **History**, and **Final report**. Decision records retain their rationale and evidence; group history preserves edits.
 
-Projects still start without conversations. When a run has three or more participating agents, the harness creates or reuses a shared coordination and final-report group as work begins. Reuse matches the purpose and member set. Newly recruited teammates join that run's shared group. Private task text and self notes are never automatically copied into it; private requests retain their original reply destination.
+Projects still start without conversations. When a run has three or more participating agents, the harness creates or reuses a shared coordination and final-report group as work begins. Reuse matches the purpose and member set. Newly recruited or privately contacted teammates do not join existing groups automatically. An existing member must invite them explicitly. Private task text and self notes are never automatically copied into it; private requests retain their original reply destination.
 
 Agents use `read_group`, `update_group`, and `record_decision`. The owner manages the contract and accepts or rejects proposed decisions. Evidence is a list of public HTTP(S) URLs or integer IDs of messages in that same group. Acceptance requires evidence, but does not independently verify factual accuracy.
 
@@ -349,7 +359,6 @@ Resolving a group requires completion criteria, existing declared deliverables, 
 Run `npm run test:groups:live` with your model configuration to exercise a real three-agent discussion, evidence-backed decision, workspace report, and group resolution in a temporary project.
 
 The group protocol is model-independent: permissions, lifecycle checks, evidence validation, and error recovery run in application code. Automated tests use scripted model responses as well as direct API calls; the live test uses whichever model `MODEL_CONFIG` selects. Gemma is the tested live configuration, not a special execution path. The current adapter requires an OpenAI-compatible chat-completions endpoint and a supported output mode; compatibility with every provider or model is not assumed.
-
 
 ### Comparing model connections
 
@@ -361,9 +370,7 @@ Completion checks measure delivery, evidence access and artifact existence, not 
 
 Endpoint references: [OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs) and [vLLM OpenAI-compatible server](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/). Provider/model support differs, so configure and test the output mode explicitly.
 
-
 Use `npm run test:models:compare -- --match-first configs/model.toml configs/model-other.local.toml` to copy the first model's output budget, context limit, timeout, temperature, response format, token parameter and extra request settings to the other connection for that comparison. Model names, endpoints and credential selections stay distinct. Comparisons run sequentially and refuse to start a model while another project is running. Reports record the effective harness context budget as well as model settings. Live search results and endpoint load can still vary.
-
 
 ### Regression checks
 

@@ -303,7 +303,12 @@ const server = http.createServer(async (req, res) => {
               ),
               limit: Number(url.searchParams.get("limit") || 10),
             })
-          : store.messages(url.searchParams.get("chat_id"), who),
+          : url.searchParams.has("before")
+            ? store.messagePage(url.searchParams.get("chat_id"), {
+                before: Number(url.searchParams.get("before")),
+                limit: Number(url.searchParams.get("limit") || 100),
+              })
+            : store.messages(url.searchParams.get("chat_id"), who),
       );
       return;
     }
@@ -431,7 +436,7 @@ const server = http.createServer(async (req, res) => {
         body.message_id,
       );
       if (!message) throw new AppError("Message not found", 404);
-      result = harness.wake(message);
+      result = harness.wake(message, true);
     } else if (path === "/directories")
       result = workspace.mkdir(body.path, who);
     else if (path === "/files/sed") result = workspace.sed(body, who);
@@ -479,6 +484,7 @@ const server = http.createServer(async (req, res) => {
           project.name,
         body.maxTurns,
         body.required_files || [],
+        { resume: body.resume },
       );
     else if (path === "/stop" && !who) {
       harness.stop();

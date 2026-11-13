@@ -54,9 +54,11 @@ test("harness posts immutable edit refs only to working self and active task cha
   while (harness.run.status === "running")
     await new Promise((r) => setTimeout(r, 5));
   const notices = store.snapshot().chats.find((c) => c.id === task.id).messages;
-  assert.equal(notices.length, 2);
+  assert.equal(notices.length, 3);
+  assert.match(notices[2].body, /an action failed/);
+  const diffs = notices.filter((m) => m.body.startsWith("File change\n"));
   assert.deepEqual(
-    notices.map((m) => JSON.parse(m.body.slice(12)).revision),
+    diffs.map((m) => JSON.parse(m.body.slice(12)).revision),
     [1, 2],
   );
   assert.ok(

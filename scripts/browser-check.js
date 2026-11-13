@@ -795,7 +795,44 @@ try {
         content_loaded: false,
       }),
   );
+  const historyChat = artifactStore.createChat(
+    "History paging fixture",
+    "self",
+    [artifactChat.members[0]],
+  );
+  const historyIds = [];
+  for (let i = 0; i < 405; i++)
+    historyIds.push(
+      artifactStore.send(
+        historyChat.id,
+        artifactChat.members[0],
+        "History fixture " + i,
+      ).id,
+    );
   artifactStore.db.close();
+  await page.reload();
+  await page.locator(`[data-chat="${historyChat.id}"]`).click();
+  assert.equal(await page.locator(".messages article.message").count(), 200);
+  await page.locator("#load-older").click();
+  await page.waitForFunction(
+    () => document.querySelectorAll(".messages article.message").length === 300,
+  );
+  await page.locator("#load-older").click();
+  await page.waitForFunction(
+    () => document.querySelectorAll(".messages article.message").length === 400,
+  );
+  await page.locator("#load-older").click();
+  await page.locator(`#message-${historyIds[0]}`).waitFor();
+  assert.equal(await page.locator(".messages article.message").count(), 405);
+  assert.equal(await page.locator("#load-older").count(), 0);
+  const scope = new URL(page.url()).searchParams.get("project");
+  await page.request.post(
+    `http://localhost:${port}/api/admin/settings?project=${scope}`,
+    { data: { allow_agent_creation: true, max_new_agents: 2 } },
+  );
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator(".messages article.message").count(), 405);
+  await page.locator(`[data-chat="${artifactChat.id}"]`).click();
   let activityPhase = "preparing";
   const activityRoute = async (route) => {
     const response = await route.fetch();

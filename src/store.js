@@ -331,6 +331,33 @@ export class Store {
       chat,
     );
   }
+  messagePage(
+    chat,
+    { before = Number.MAX_SAFE_INTEGER, limit = 100 } = {},
+    actor = null,
+  ) {
+    if (actor) this.requireMember(chat, actor);
+    else this.chat(chat);
+    if (
+      !Number.isSafeInteger(before) ||
+      before < 1 ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 200
+    )
+      throw new AppError("Invalid history cursor or page size");
+    const rows = this.all(
+      "SELECT * FROM messages WHERE chat_id=? AND id<? ORDER BY id DESC LIMIT ?",
+      chat,
+      before,
+      limit + 1,
+    );
+    const messages = rows.slice(0, limit).reverse();
+    return {
+      messages,
+      next_before: rows.length > limit ? messages[0].id : null,
+    };
+  }
   send(chat, sender, body) {
     if (sender) this.requireMember(chat, sender);
     else this.chat(chat);
@@ -467,6 +494,15 @@ export class Store {
         return {
           ...c,
           messages,
+          next_before:
+            messages.length &&
+            this.get(
+              "SELECT 1 FROM messages WHERE chat_id=? AND id<? LIMIT 1",
+              c.id,
+              messages[0].id,
+            )
+              ? messages[0].id
+              : null,
           read_states,
           ...(actor
             ? {

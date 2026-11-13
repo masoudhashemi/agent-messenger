@@ -179,7 +179,12 @@ test("actions without self working notes are rejected without side effects", asy
   );
   h.start([a.id], "Work", 1);
   while (h.run.status === "running") await new Promise((r) => setTimeout(r, 5));
-  assert.equal(s.chats().length, 0);
+  assert.ok(s.chats().every((c) => c.kind === "self"));
+  assert.ok(
+    s
+      .all("SELECT body FROM messages")
+      .every((m) => !m.body.includes("Should not send")),
+  );
   assert.match(h.history[0].message, /working_note/);
   s.db.close();
 });
@@ -231,7 +236,11 @@ test("working notes must be private and precede outbound actions", async () => {
   bad.start([a.id], "Work", 1);
   while (bad.run.status === "running")
     await new Promise((r) => setTimeout(r, 5));
-  assert.equal(s.messages(dm.id).length, 1);
+  assert.equal(
+    s.messages(dm.id).filter((m) => m.body === "Please review.").length,
+    1,
+  );
+  assert.ok(!s.messages(dm.id).some((m) => m.body === "Must not send"));
   assert.match(bad.history[0].message, /private self chat/);
   s.db.close();
 });

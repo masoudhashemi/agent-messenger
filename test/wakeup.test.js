@@ -165,7 +165,7 @@ test("failed requests remain retryable and stop prevents automatic restart", asy
   await settle(h);
   assert.equal(calls, 1);
   assert.equal(h.requests[0].status, "error");
-  h.completion = async () => response();
+  h.completion = async () => response([{ type: "reply", body: "Handled" }]);
   h.wake(m);
   await settle(h);
   assert.equal(h.requests[0].status, "delivered");
@@ -181,5 +181,129 @@ test("failed requests remain retryable and stop prevents automatic restart", asy
   await settle(h);
   assert.equal(h.run.status, "stopped");
   assert.equal(h.requests.at(-1).status, "cancelled");
+  s.db.close();
+});
+
+test("direct requests stay pending after reading and survive resume without reply loops", async () => {
+  const { s, a, b, c } = fixture();
+  let h = new Harness(
+    s,
+    () => {},
+    async (messages) => {
+      const ctx = JSON.parse(messages[1].content);
+      return response(
+        ctx.you.id === a.id
+          ? [
+              { type: "direct", agent_id: b.id, body: "PRIVATE_QUESTION" },
+              { type: "finish" },
+            ]
+          : [],
+      );
+    },
+  );
+  h.start([a.id, b.id], "Collaborate", 2);
+  await settle(h);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.requests[0].status, "delivered");
+  assert.deepEqual(h.requests[0].pending_replies, [b.id]);
+  const seen = [];
+  h = new Harness(
+    s,
+    () => {},
+    async (messages) => {
+      const ctx = JSON.parse(messages[1].content);
+      seen.push(ctx);
+      return response(
+        ctx.you.id === b.id
+          ? [
+              { type: "reply", body: "Answer" },
+              { type: "finish", summary: "Answered" },
+            ]
+          : undefined,
+      );
+    },
+  );
+  h.start([b.id, c.id], "Continue", 4);
+  await settle(h);
+  assert.ok(
+    seen
+      .find((x) => x.you.id === b.id)
+      .incoming_requests.some((m) => m.body === "PRIVATE_QUESTION"),
+  );
+  assert.ok(
+    seen
+      .filter((x) => x.you.id === c.id)
+      .every((x) => !JSON.stringify(x).includes("PRIVATE_QUESTION")),
+  );
+  assert.deepEqual(h.requests[0].pending_replies, []);
+  assert.equal(h.requests.length, 1);
+  assert.ok(h.requests[0].responses.some((r) => r.agent_id === b.id));
+  s.db.close();
+});
+
+test("direct request on final turn waits for explicit budget; information needs no reply", async () => {
+  const { s, a, b } = fixture();
+  const seen = [];
+  const h = new Harness(
+    s,
+    () => {},
+    async (messages) => {
+      const ctx = JSON.parse(messages[1].content);
+      seen.push(ctx);
+      return response(
+        ctx.you.id === a.id
+          ? [{ type: "direct", agent_id: b.id, body: "Please answer" }]
+          : [{ type: "reply", body: "Answer" }],
+      );
+    },
+  );
+  h.start([a.id], "Ask", 1);
+  await settle(h);
+  assert.equal(seen.length, 1);
+  assert.equal(h.requests[0].waiting_for_budget, true);
+  h.wake(
+    s.get("SELECT * FROM messages WHERE id=?", h.requests[0].message_id),
+    true,
+  );
+  await settle(h);
+  assert.equal(seen.length, 2);
+  assert.equal(seen[1].incoming_requests[0].body, "Please answer");
+  assert.deepEqual(h.requests[0].pending_replies, []);
+  assert.equal(h.requests.length, 1);
+  h.completion = async () =>
+    response([
+      { type: "direct", agent_id: b.id, body: "FYI", requires_reply: false },
+    ]);
+  h.start([a.id], "Inform", 1);
+  await settle(h);
+  assert.equal(h.requests.length, 1);
+  s.db.close();
+});
+
+test("reading cannot satisfy a direct request; explicit retry answers only the pending recipient", async () => {
+  const { s, a, b } = fixture();
+  const chat = s.createChat("Question", "direct", [a.id, b.id]);
+  const h = new Harness(
+    s,
+    () => {},
+    async () => response(),
+  );
+  h.run = { status: "completed", maxTurns: 1 };
+  const message = s.send(chat.id, a.id, "Please answer");
+  h.wake(message, true);
+  await settle(h);
+  assert.equal(h.requests[0].status, "delivered");
+  assert.deepEqual(h.requests[0].pending_replies, [b.id]);
+  assert.equal(h.run.completion.status, "incomplete");
+  assert.match(h.history[0].message, /pending requests|Reply to chat/);
+  h.completion = async (messages) => {
+    const ctx = JSON.parse(messages[1].content);
+    assert.equal(ctx.you.id, b.id);
+    return response([{ type: "reply", body: "Resolved" }]);
+  };
+  h.wake(message, true);
+  await settle(h);
+  assert.deepEqual(h.requests[0].pending_replies, []);
+  assert.equal(h.requests.length, 1);
   s.db.close();
 });

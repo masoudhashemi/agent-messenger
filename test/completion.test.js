@@ -122,9 +122,12 @@ test("missing required deliverable prevents success and explicit blockers remain
     await settle(h);
     assert.equal(turn, 2);
     assert.equal(h.run.completion.status, "checks_passed");
+    let blockedTurn = 0;
     h.completion = async () =>
       response([
-        { type: "send", chat_id: "missing", body: "x" },
+        ...(++blockedTurn === 1
+          ? [{ type: "send", chat_id: "missing", body: "x" }]
+          : []),
         {
           type: "finish",
           outcome: "blocked",
@@ -322,11 +325,78 @@ test("retrieved_sources persist in work_contract across turns, 8-char prefixes r
       "https://example.com/primary",
     );
     assert.ok(
-      leadContextOnTurn3.work_contract.search_artifacts.includes(fullArtifactId),
+      leadContextOnTurn3.work_contract.search_artifacts.includes(
+        fullArtifactId,
+      ),
     );
     assert.equal(
       leadContextOnTurn3.context.agents.find((x) => x.id === peer.id).status,
       "done",
+    );
+  } finally {
+    s.db.close();
+  }
+});
+
+test("resumed research keeps previously read evidence without sharing another agent's sources", async () => {
+  const { workContext, completionProblems } =
+    await import("../src/work-contract.js");
+  const s = new Store();
+  try {
+    const a = s.createAgent("Researcher", "Research"),
+      b = s.createAgent("Other", "Work");
+    const chat = s.createChat("Notes", "self", [a.id]);
+    const artifact = s.artifacts.save("fixture", {
+      owner: a.id,
+      chat_id: chat.id,
+      label: "web_search",
+    });
+    s.sources.save(
+      artifact,
+      [
+        {
+          title: "Evidence",
+          url: "https://example.com/prior",
+          snippet: "Previously read evidence",
+        },
+      ],
+      { owner: a.id, chat_id: chat.id },
+    );
+    const source = s.sources.list(a.id, { artifact_id: artifact }).results[0];
+    new Retrieval(s).execute(a.id, {
+      type: "read_source",
+      source_id: source.source_id,
+    });
+    s.run("UPDATE source_reads SET created_at=?", "2020-01-01T00:00:00.000Z");
+    const work = {
+      reply_targets: [],
+      required_files: [],
+      errors: {},
+      searched: true,
+      deliveries: [],
+      status: "working",
+    };
+    assert.equal(
+      workContext(work, s, a.id, new Date().toISOString()).retrieved_sources[0]
+        .source_id,
+      source.source_id,
+    );
+    assert.equal(
+      workContext(work, s, b.id, new Date().toISOString()).retrieved_sources
+        .length,
+      0,
+    );
+    work.deliveries.push(
+      s.send(chat.id, a.id, "Finding https://example.com/prior").id,
+    );
+    assert.deepEqual(
+      completionProblems(
+        s,
+        null,
+        { work: { [a.id]: work }, started_at: new Date().toISOString() },
+        a.id,
+      ),
+      [],
     );
   } finally {
     s.db.close();

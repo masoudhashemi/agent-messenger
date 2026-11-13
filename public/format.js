@@ -211,29 +211,33 @@ export function renderMessage(body, chats = [], id = "") {
           const r = item.result || {},
             chat = chats.find((c) => c.id === (r.chat_id || r.id));
           const label =
-            r.path && item.action === "run_python"
-              ? "Python · " + r.status
-              : r.path &&
-                  ["read_file", "write_file", "edit_file"].includes(item.action)
-                ? item.action === "read_file"
-                  ? "File read"
-                  : "File saved"
-                : r.error
-                  ? "Action failed"
-                  : r.status === "finished"
-                    ? "Finished this task"
-                    : r.body
-                      ? "Message sent"
-                      : item.action === "update_chat"
-                        ? "Thread updated"
-                        : item.action === "invite"
-                          ? "Member added"
-                          : r.kind === "self"
-                            ? "Self-thread ready"
-                            : r.kind === "group"
-                              ? "Group ready"
-                              : "Action completed";
-          return `<div class="action-item ${r.error ? "action-error" : ""}"><span class="action-check">${r.error ? "!" : "✓"}</span><div><strong>${escapeHtml(label)}</strong>${r.path ? `<span class="action-target">${escapeHtml(r.path)}${r.revision ? ` · v${r.revision}` : ""}</span>` : ""}${item.action === "run_python" ? `<div class="execution-output">${r.stdout ? `<pre><code>${escapeHtml(r.stdout)}</code></pre>` : ""}${r.stderr ? `<pre><code>${escapeHtml(r.stderr)}</code></pre>` : ""}<small>Exit ${escapeHtml(r.exit_code ?? "—")} · ${escapeHtml(r.duration_ms)} ms</small></div>` : ""}${chat || r.name ? `<span class="action-target">${escapeHtml(chat?.name || r.name)}</span>` : ""}${r.error ? `<p>${escapeHtml(r.error)}</p>` : ""}${r.body ? `<div class="action-body">${markdown(r.body)}</div>` : ""}${artifactButton(r.artifact_id)}${!r.diff_posted && !r.error && ["write_file", "edit_file", "sed"].includes(item.action) ? fileDiffCard(r) : ""}${
+            r.status === "skipped"
+              ? "Action skipped"
+              : r.error
+                ? "Action failed"
+                : r.path && item.action === "run_python"
+                  ? "Python · " + r.status
+                  : r.path &&
+                      ["read_file", "write_file", "edit_file"].includes(
+                        item.action,
+                      )
+                    ? item.action === "read_file"
+                      ? "File read"
+                      : "File saved"
+                    : r.status === "finished"
+                      ? "Finished this task"
+                      : r.body
+                        ? "Message sent"
+                        : item.action === "update_chat"
+                          ? "Thread updated"
+                          : item.action === "invite"
+                            ? "Member added"
+                            : r.kind === "self"
+                              ? "Self-thread ready"
+                              : r.kind === "group"
+                                ? "Group ready"
+                                : "Action completed";
+          return `<div class="action-item ${r.error ? "action-error" : ""}"><span class="action-check">${r.status === "skipped" ? "—" : r.error ? "!" : "✓"}</span><div><strong>${escapeHtml(label)}</strong>${r.path ? `<span class="action-target">${escapeHtml(r.path)}${r.revision ? ` · v${r.revision}` : ""}</span>` : ""}${item.action === "run_python" && r.status !== "skipped" ? `<div class="execution-output">${r.stdout ? `<pre><code>${escapeHtml(r.stdout)}</code></pre>` : ""}${r.stderr ? `<pre><code>${escapeHtml(r.stderr)}</code></pre>` : ""}<small>Exit ${escapeHtml(r.exit_code ?? "—")} · ${escapeHtml(r.duration_ms)} ms</small></div>` : ""}${chat || r.name ? `<span class="action-target">${escapeHtml(chat?.name || r.name)}</span>` : ""}${r.reason ? `<p>${escapeHtml(r.reason)}</p>` : ""}${r.error ? `<p>${escapeHtml(r.error)}</p>` : ""}${r.body ? `<div class="action-body">${markdown(r.body)}</div>` : ""}${artifactButton(r.artifact_id)}${!r.diff_posted && !r.error && r.status !== "skipped" && ["write_file", "edit_file", "sed"].includes(item.action) ? fileDiffCard(r) : ""}${
             !r.diff_posted && Array.isArray(r.changes)
               ? r.changes
                   .flatMap((e) => e.changes || [])

@@ -248,11 +248,14 @@ export class Retrieval {
     const file = this.workspace.read(a.path, a.revision ?? null);
     const lines = file.content.split("\n");
     const start = integer(a.start_line, 1, 1, Math.max(1, lines.length));
-    const end = integer(
-      a.end_line,
-      Math.min(lines.length, start + 79),
-      start,
+    const end = Math.min(
       lines.length,
+      integer(
+        a.end_line,
+        Math.min(lines.length, start + 79),
+        start,
+        Number.MAX_SAFE_INTEGER,
+      ),
     );
     const column = integer(a.start_column, 0, 0, lines[start - 1].length);
     let content = "",

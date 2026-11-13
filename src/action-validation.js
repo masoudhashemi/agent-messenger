@@ -44,8 +44,30 @@ export const actionRequired = {
   read_file_diff: ["path"],
   read_execution: ["execution_id"],
   web_search: ["query"],
+  mkdir: ["path"],
+  write_file: ["path", "content", "expected_revision"],
+  edit_file: ["path", "find", "replace", "expected_revision"],
+  sed: ["path", "start_line", "replacement", "expected_revision"],
+  run_python: ["path"],
+};
+const responseFields = {
+  response_kind: { type: "string", enum: ["progress", "final", "blocker"] },
+  request_ids: {
+    type: "array",
+    items: { type: "integer", minimum: 1 },
+    maxItems: 30,
+  },
 };
 export const actionStructuredFields = {
+  direct: { ...responseFields, requires_reply: { type: "boolean" } },
+  send: { ...responseFields, requires_reply: { type: "boolean" } },
+  reply: { ...responseFields, requires_reply: { type: "boolean" } },
+  write_file: { content: { type: "string" } },
+  edit_file: {
+    find: { type: "string", minLength: 1 },
+    replace: { type: "string" },
+  },
+  sed: { replacement: { type: "string" } },
   record_decision: {
     evidence: {
       type: "array",
@@ -145,6 +167,25 @@ export const actionFields = {
     limit: [1, 8000],
   },
   web_search: { query: "string", limit: [1, 5] },
+  mkdir: { path: "string" },
+  write_file: {
+    path: "string",
+    expected_revision: [0, Number.MAX_SAFE_INTEGER],
+  },
+  edit_file: {
+    path: "string",
+    expected_revision: [1, Number.MAX_SAFE_INTEGER],
+  },
+  sed: {
+    path: "string",
+    start_line: [1, Number.MAX_SAFE_INTEGER],
+    end_line: [1, Number.MAX_SAFE_INTEGER],
+    expected_revision: [1, Number.MAX_SAFE_INTEGER],
+  },
+  run_python: {
+    path: "string",
+    timeout_seconds: [1, 60],
+  },
 };
 export function validateAction(action) {
   if (!action || typeof action.type !== "string")
@@ -165,6 +206,32 @@ export function validateAction(action) {
     invalid(
       'record_decision.evidence must contain URLs or integer message IDs, e.g. [123, "https://example.com/source"], not objects',
     );
+  if (
+    ["direct", "send", "reply"].includes(action.type) &&
+    action.requires_reply !== undefined &&
+    typeof action.requires_reply !== "boolean"
+  )
+    invalid(`${action.type}.requires_reply must be a boolean`);
+  if (["send", "direct", "reply"].includes(action.type)) {
+    if (
+      action.response_kind !== undefined &&
+      !["progress", "final", "blocker"].includes(action.response_kind)
+    )
+      invalid("Invalid response_kind");
+    if (
+      action.request_ids !== undefined &&
+      (!Array.isArray(action.request_ids) ||
+        action.request_ids.length > 30 ||
+        action.request_ids.some((id) => !Number.isInteger(id) || id < 1))
+    )
+      invalid("request_ids must contain positive message IDs");
+    if (
+      action.type !== "reply" &&
+      ["final", "blocker"].includes(action.response_kind) &&
+      !action.request_ids?.length
+    )
+      invalid("Final send/direct responses require request_ids");
+  }
   for (const [field, rule] of Object.entries(actionFields[action.type] || {})) {
     if (action[field] === undefined) continue;
     const value = action[field];
