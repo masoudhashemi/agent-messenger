@@ -323,20 +323,65 @@ export class Projects {
     };
   }
   describe(id) {
-    const { project, store, harness } = this.get(id);
-    const run = harness.state().run;
-    return {
-      ...project,
-      agents: store.agents().length,
-      chats: store.chats().length,
-      messages: store.get("SELECT COUNT(*) AS n FROM messages").n,
-      run,
-      updated_at:
-        run?.ended_at ||
-        run?.started_at ||
-        store.get("SELECT MAX(created_at) AS at FROM messages").at ||
-        project.created_at,
-    };
+    if (this.open.has(id)) {
+      const { project, store, harness } = this.open.get(id);
+      const run = harness.state().run;
+      return {
+        ...project,
+        agents: store.agents().length,
+        chats: store.chats().length,
+        messages: store.get("SELECT COUNT(*) AS n FROM messages").n,
+        run,
+        updated_at:
+          run?.ended_at ||
+          run?.started_at ||
+          store.get("SELECT MAX(created_at) AS at FROM messages").at ||
+          project.created_at,
+      };
+    }
+    const project = this.db
+      .prepare("SELECT * FROM projects WHERE id=?")
+      .get(id);
+    if (!project) throw new AppError("Project not found", 404);
+    const dbPath = join(this.directory, id + ".sqlite");
+    if (!existsSync(dbPath)) return this.get(id) && this.describe(id);
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const hasAgents = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agents'")
+        .get();
+      if (!hasAgents) {
+        db.close();
+        this.get(id);
+        return this.describe(id);
+      }
+      const agents = db.prepare("SELECT COUNT(*) AS n FROM agents").get().n;
+      const chats = db.prepare("SELECT COUNT(*) AS n FROM chats").get().n;
+      const messages = db.prepare("SELECT COUNT(*) AS n FROM messages").get().n;
+      const lastMsg = db.prepare("SELECT MAX(created_at) AS at FROM messages").get().at;
+      const rtRow = db.prepare("SELECT state FROM runtime WHERE id=1").get();
+      const saved = rtRow ? JSON.parse(rtRow.state) : null;
+      let run = saved?.run ? { ...saved.run, controller: undefined } : null;
+      if (run?.status === "running") {
+        run = {
+          ...run,
+          status: "interrupted",
+          ended_at: run.ended_at || new Date().toISOString(),
+        };
+      }
+      return {
+        ...project,
+        workspace_path:
+          project.workspace_path || resolve(this.directory, "workspaces", id),
+        agents,
+        chats,
+        messages,
+        run,
+        updated_at: run?.ended_at || run?.started_at || lastMsg || project.created_at,
+      };
+    } finally {
+      if (db.isOpen) db.close();
+    }
   }
   list() {
     return this.db

@@ -35,7 +35,7 @@ const h = new Harness(s, () => {
 h.start(
   agents.map((a) => a.id),
   "Design a privacy-first agent messaging app. Start from no conversations: create a shared group when needed, exchange direct feedback, and record every turn in a self chat using working_note. Update summaries.",
-  9,
+  12,
 );
 while (h.run.status === "running") await new Promise((r) => setTimeout(r, 500));
 const snapshot = s.snapshot(),

@@ -10,6 +10,7 @@ export function buildContext(
     incoming = [],
     feedback = [],
     work = null,
+    teamStatus = null,
     turn,
     turnLimit,
     budget = DEFAULT_CONTEXT_BYTES,
@@ -245,7 +246,13 @@ export function buildContext(
   if (selfId !== activeId) load(selfId, "working_thread", true);
   for (const a of retrieval.execute(actor, { type: "list_agents", limit: 30 })
     .results)
-    if (!push(payload.context.agents, a)) break;
+    if (
+      !push(
+        payload.context.agents,
+        teamStatus?.[a.id] ? { ...a, status: teamStatus[a.id] } : a,
+      )
+    )
+      break;
   for (const c of directory.results) {
     const item = {
       id: c.id,

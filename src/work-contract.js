@@ -18,7 +18,7 @@ export function addReplyTarget(run, actor, message) {
       message_id: message.id,
     });
 }
-export function workContext(work) {
+export function workContext(work, store = null, actor = null, since = null) {
   return {
     reply_targets: work.reply_targets,
     shared_group_id: work.shared_group_id || null,
@@ -26,6 +26,12 @@ export function workContext(work) {
     required_files: work.required_files,
     unresolved_tools: Object.values(work.errors),
     research_requires_citations: work.searched,
+    ...(work.searched && store && actor && since
+      ? {
+          retrieved_sources: store.sources.observedSources(actor, since),
+          search_artifacts: store.sources.searchArtifacts(actor, since),
+        }
+      : {}),
     status: work.status,
   };
 }

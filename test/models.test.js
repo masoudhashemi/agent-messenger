@@ -172,3 +172,33 @@ test("model selection persists and each run pins its connection configuration", 
     db.close();
   }
 });
+test("context budget converts token headroom to bytes without rejecting 16k windows", () => {
+  const db = new DatabaseSync(":memory:");
+  const store = new Store();
+  try {
+    const registry = new ModelRegistry(db),
+      medium = registry.save({
+        ...base,
+        context_window_tokens: 16384,
+        max_tokens: 4096,
+      }),
+      tiny = registry.save({
+        ...base,
+        context_window_tokens: 4096,
+        max_tokens: 2048,
+      }),
+      agent = store.createAgent("A", "Work");
+    const h = new Harness(store);
+    h.modelRegistry = registry;
+    h.loop = () => {};
+    h.selectModel(medium.id);
+    h.start([agent.id], "Test", 2);
+    assert.equal(h.run.context_budget_bytes, (16384 - 4096 - 512) * 3);
+    h.stop();
+    h.selectModel(tiny.id);
+    assert.throws(() => h.start([agent.id], "Test", 2), /too small/);
+  } finally {
+    store.db.close();
+    db.close();
+  }
+});

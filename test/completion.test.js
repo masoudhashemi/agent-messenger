@@ -256,3 +256,79 @@ test("finish cannot precede later actions and failed execution results stay unre
     s.db.close();
   }
 });
+test("retrieved_sources persist in work_contract across turns, 8-char prefixes resolve, and active teammates show working status", async () => {
+  const s = new Store();
+  try {
+    const lead = s.createAgent("Lead", "Coordinate", ["web_search"]),
+      peer = s.createAgent("Specialist", "Research", ["web_search"]);
+    const source = {
+      title: "Primary Evidence",
+      url: "https://example.com/primary",
+      snippet: "Verified historical excerpt.",
+    };
+    let turn = 0,
+      fullSourceId,
+      fullArtifactId,
+      leadContextOnTurn3;
+    const h = new Harness(
+      s,
+      () => {},
+      async (messages) => {
+        const ctx = JSON.parse(messages[1].content);
+        turn++;
+        if (turn === 1) {
+          const peerEntry = ctx.context.agents.find((x) => x.id === peer.id);
+          assert.equal(peerEntry.status, "working");
+          return response([{ type: "web_search", query: "iran" }]);
+        }
+        if (turn === 2) {
+          return response([
+            { type: "reply", body: "Specialist update" },
+            finish,
+          ]);
+        }
+        if (turn === 3) {
+          fullArtifactId = ctx.previous_action_results[0].artifact_id;
+          fullSourceId =
+            ctx.previous_action_results[0].sources.results[0].source_id;
+          return response([
+            { type: "read_source", source_id: fullSourceId.slice(0, 8) },
+          ]);
+        }
+        if (turn === 4) {
+          // Run another non-source action so previous_action_results rolls over on turn 5.
+          return response([{ type: "list_chats" }]);
+        }
+        leadContextOnTurn3 = ctx;
+        return response([
+          {
+            type: "reply",
+            body: "Final report citing https://example.com/primary",
+          },
+          finish,
+        ]);
+      },
+    );
+    h.webSearch.execute = async () => ({ results: [source], query: "iran" });
+    h.start([lead.id, peer.id], "Research", 6);
+    await settle(h);
+    assert.equal(h.run.completion.status, "checks_passed");
+    assert.equal(
+      leadContextOnTurn3.work_contract.retrieved_sources[0].source_id,
+      fullSourceId,
+    );
+    assert.equal(
+      leadContextOnTurn3.work_contract.retrieved_sources[0].url,
+      "https://example.com/primary",
+    );
+    assert.ok(
+      leadContextOnTurn3.work_contract.search_artifacts.includes(fullArtifactId),
+    );
+    assert.equal(
+      leadContextOnTurn3.context.agents.find((x) => x.id === peer.id).status,
+      "done",
+    );
+  } finally {
+    s.db.close();
+  }
+});

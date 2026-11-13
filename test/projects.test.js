@@ -392,3 +392,27 @@ test("full deletion refuses replaced workspace symlinks", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("listing projects after restart summarizes without opening dormant workspaces", () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-list-lazy-"));
+  let projects = new Projects(dir);
+  try {
+    const p = projects.create("Dormant", "Summary");
+    const { store } = projects.get(p.id);
+    const a = store.createAgent("Worker", "Work");
+    const c = store.createChat("Notes", "self", [a.id]);
+    store.send(c.id, a.id, "Saved message");
+    projects.close();
+    projects = new Projects(dir);
+    const listed = projects.list();
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].id, p.id);
+    assert.equal(listed[0].agents, 2);
+    assert.equal(listed[0].chats, 1);
+    assert.equal(listed[0].messages, 1);
+    assert.equal(projects.open.size, 0);
+  } finally {
+    projects.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

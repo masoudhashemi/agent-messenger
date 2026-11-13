@@ -99,7 +99,20 @@ export class Artifacts {
   info(id, actor = null) {
     if (typeof id !== "string" || !id.trim())
       throw new AppError("artifact_id must be a nonempty string");
-    const row = this.store.get("SELECT * FROM artifacts WHERE id=?", id);
+    let row = this.store.get("SELECT * FROM artifacts WHERE id=?", id);
+    if (!row && /^[0-9a-f]{8}[0-9a-f-]{0,27}$/i.test(id)) {
+      const matches = actor
+        ? this.store.all(
+            "SELECT * FROM artifacts WHERE id LIKE ? AND (owner=? OR owner IS NULL)",
+            id.toLowerCase() + "%",
+            actor,
+          )
+        : this.store.all(
+            "SELECT * FROM artifacts WHERE id LIKE ?",
+            id.toLowerCase() + "%",
+          );
+      if (matches.length === 1) row = matches[0];
+    }
     if (!row) throw new AppError("Artifact not found", 404);
     if (actor) {
       this.store.agent(actor);
@@ -110,16 +123,17 @@ export class Artifacts {
     return row;
   }
   *chunks(id, actor = null) {
-    this.info(id, actor);
+    const info = this.info(id, actor);
     for (const row of this.store.db
       .prepare(
         "SELECT body FROM artifact_chunks WHERE artifact_id=? ORDER BY offset",
       )
-      .iterate(id))
+      .iterate(info.id))
       yield row.body;
   }
   read(id, actor = null, { offset = 0, limit = 4000 } = {}) {
     const info = this.info(id, actor);
+    id = info.id;
     if (
       !Number.isInteger(offset) ||
       offset < 0 ||
@@ -158,6 +172,7 @@ export class Artifacts {
   }
   search(id, actor, { query, offset = 0, limit = 10 } = {}) {
     const info = this.info(id, actor);
+    id = info.id;
     if (
       typeof query !== "string" ||
       !query ||

@@ -25,7 +25,7 @@ export class ResearchSources {
     }
   }
   list(actor, { artifact_id, offset = 0, limit = 5 }) {
-    this.store.artifacts.info(artifact_id, actor);
+    artifact_id = this.store.artifacts.info(artifact_id, actor).id;
     if (
       !Number.isInteger(offset) ||
       offset < 0 ||
@@ -71,7 +71,7 @@ export class ResearchSources {
     };
   }
   read(actor, { source_id, offset = 0, limit = 3000 }) {
-    this.store.artifacts.info(source_id, actor);
+    source_id = this.store.artifacts.info(source_id, actor).id;
     const row = this.store.get(
       "SELECT * FROM research_sources WHERE id=?",
       source_id,
@@ -105,5 +105,23 @@ export class ResearchSources {
         since,
       )
       .map((r) => r.url);
+  }
+  observedSources(actor, since, limit = 15) {
+    return this.store.all(
+      "SELECT s.id AS source_id, s.title, s.url FROM source_reads r JOIN research_sources s ON s.id=r.source_id WHERE r.agent_id=? AND r.created_at>=? AND r.characters>0 GROUP BY s.id ORDER BY MAX(r.created_at) DESC LIMIT ?",
+      actor,
+      since,
+      limit,
+    );
+  }
+  searchArtifacts(actor, since, limit = 10) {
+    return this.store
+      .all(
+        "SELECT id AS artifact_id FROM artifacts WHERE owner=? AND label='web_search' AND created_at>=? ORDER BY created_at DESC LIMIT ?",
+        actor,
+        since,
+        limit,
+      )
+      .map((r) => r.artifact_id);
   }
 }
